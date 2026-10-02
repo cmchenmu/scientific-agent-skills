@@ -198,7 +198,7 @@ def download_open_access_articles(
     output_dir.mkdir(parents=True, exist_ok=True)
     params = urllib.parse.urlencode(
         {
-            "query": f"OPEN_ACCESS:Y AND SRC:PMC AND ({query})",
+            "query": f"OPEN_ACCESS:Y AND HAS_FT:Y AND SRC:PMC AND ({query})",
             "format": "json",
             "pageSize": max(limit * 5, 100),
         }
@@ -207,28 +207,47 @@ def download_open_access_articles(
         f"{EUROPE_PMC_SEARCH}?{params}", timeout=30
     ) as response:
         payload = json.load(response)
-    candidates = select_open_access_results(payload["resultList"]["result"], limit)
+    candidates = select_open_access_results(
+        payload["resultList"]["result"], len(payload["resultList"]["result"])
+    )
     if len(candidates) < limit:
         raise RuntimeError(
             f"only found {len(candidates)} eligible open-access research articles"
         )
 
     manifest_path = output_dir / "manifest.jsonl"
-    with manifest_path.open("w", encoding="utf-8") as manifest:
+    skipped_path = output_dir / "skipped.jsonl"
+    accepted = 0
+    with (
+        manifest_path.open("w", encoding="utf-8") as manifest,
+        skipped_path.open("w", encoding="utf-8") as skipped,
+    ):
         for result in candidates:
+            if accepted == limit:
+                break
             pmcid = result["pmcid"]
             source_url = EUROPE_PMC_FULL_TEXT.format(pmcid=pmcid)
             destination = output_dir / f"{pmcid}.xml"
-            request = urllib.request.Request(
-                source_url, headers={"User-Agent": "lab-agent-learning/0.1"}
-            )
-            with (
-                urllib.request.urlopen(request, timeout=60) as response,
-                destination.open("wb") as target,
-            ):
-                for block in iter(lambda: response.read(1024 * 1024), b""):
-                    target.write(block)
-            parsed = parse_jats_xml(destination)
+            try:
+                request = urllib.request.Request(
+                    source_url, headers={"User-Agent": "lab-agent-learning/0.1"}
+                )
+                with (
+                    urllib.request.urlopen(request, timeout=60) as response,
+                    destination.open("wb") as target,
+                ):
+                    for block in iter(lambda: response.read(1024 * 1024), b""):
+                        target.write(block)
+                parsed = parse_jats_xml(destination)
+            except (OSError, ValueError, urllib.error.URLError) as error:
+                skipped.write(
+                    json.dumps(
+                        {"pmcid": pmcid, "source_url": source_url, "reason": str(error)},
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+                continue
             manifest.write(
                 json.dumps(
                     {
@@ -247,6 +266,12 @@ def download_open_access_articles(
                 )
                 + "\n"
             )
+            accepted += 1
+    if accepted < limit:
+        raise RuntimeError(
+            f"downloaded {accepted} usable open-access research articles, expected {limit}; "
+            f"see {skipped_path}"
+        )
     return manifest_path
 
 

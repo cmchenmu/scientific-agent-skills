@@ -21,6 +21,11 @@ from pydantic import BaseModel, Field
 from app.demo import DEMO_PROJECT, ensure_demo_data
 from app.services.admin_adapter import AdapterError, LocalAdminAdapter, Preview
 from app.services.knowledge import KnowledgeAnswer, KnowledgeService
+from app.services.literature_import import (
+    LiteratureImportResult,
+    import_open_access_literature,
+    import_research_direction,
+)
 from app.services.local_archive import LocalArchive
 from app.services.manuscript_workflow import ManuscriptWorkflow, WorkflowError
 
@@ -54,6 +59,18 @@ class ActionCreate(BaseModel):
 
 class ApprovalDecision(BaseModel):
     decision: str = Field(pattern="^(approved|rejected)$")
+
+
+class LiteratureImportRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    query: str = Field(min_length=2, max_length=500)
+    limit: int = Field(default=100, ge=1, le=100)
+
+
+class ResearchDirectionImportRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    direction: str = Field(min_length=2, max_length=1_000)
+    limit: int = Field(default=100, ge=50, le=100)
 
 
 def _data_root() -> Path:
@@ -130,6 +147,60 @@ def chat_stream(request: KnowledgeQuery, x_user_id: str | None = Header(default=
         yield "event: done\ndata: {}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.get("/v1/library/summary")
+def library_summary(project_id: str, x_user_id: str | None = Header(default=None)) -> dict[str, int]:
+    user = current_user(x_user_id)
+    if project_id not in user["project_roles"] and "admin" not in user["roles"]:
+        raise HTTPException(status_code=403, detail="project is not visible to this user")
+    return _archive().project_summary(project_id)
+
+
+@app.post("/v1/literature/import", response_model=LiteratureImportResult)
+def import_literature(
+    request: LiteratureImportRequest, x_user_id: str | None = Header(default=None)
+) -> LiteratureImportResult:
+    user = current_user(x_user_id)
+    if not set(user["project_roles"].get(request.project_id, [])).intersection(
+        {"research-assistant", "pi"}
+    ):
+        raise HTTPException(status_code=403, detail="literature import requires research-assistant or pi role")
+    try:
+        return import_open_access_literature(
+            _archive(),
+            inbox_root=_data_root() / "inbox",
+            project_id=request.project_id,
+            query=request.query,
+            limit=request.limit,
+        )
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/v1/literature/direction-import", response_model=LiteratureImportResult)
+def import_research_direction_endpoint(
+    request: ResearchDirectionImportRequest,
+    x_user_id: str | None = Header(default=None),
+) -> LiteratureImportResult:
+    user = current_user(x_user_id)
+    if not set(user["project_roles"].get(request.project_id, [])).intersection(
+        {"research-assistant", "pi"}
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="research direction import requires research-assistant or pi role",
+        )
+    try:
+        return import_research_direction(
+            _archive(),
+            inbox_root=_data_root() / "inbox",
+            project_id=request.project_id,
+            direction=request.direction,
+            limit=request.limit,
+        )
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @app.get("/v1/tasks")

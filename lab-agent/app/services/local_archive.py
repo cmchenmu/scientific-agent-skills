@@ -216,6 +216,22 @@ class LocalArchive:
                 )
             ]
 
+    def project_summary(self, project_name: str) -> dict[str, int]:
+        """Return non-sensitive collection counts for a project dashboard."""
+        self.initialize()
+        with self._connect() as connection:
+            document_count = connection.execute(
+                """SELECT COUNT(*) FROM documents d JOIN projects p ON p.id = d.project_id
+                   WHERE p.name = ?""",
+                (project_name,),
+            ).fetchone()[0]
+            chunk_count = connection.execute(
+                """SELECT COUNT(*) FROM chunks c JOIN documents d ON d.id = c.document_id
+                   JOIN projects p ON p.id = d.project_id WHERE p.name = ?""",
+                (project_name,),
+            ).fetchone()[0]
+        return {"documents": document_count, "chunks": chunk_count}
+
     def grant_role(
         self,
         user_id: str,

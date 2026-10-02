@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.literature_import import LiteratureImportResult
 
 
 def headers(user_id: str) -> dict[str, str]:
@@ -75,3 +76,59 @@ def test_reimbursement_preview_approval_submit_and_visibility(monkeypatch, tmp_p
     assert committed.status_code == 200
     assert committed.json()["external_id"].startswith("SIM-")
     assert client.get(f"/v1/tasks/{action_id}", headers=headers("student-demo")).status_code == 403
+
+
+def test_library_summary_and_import_access_control(monkeypatch, tmp_path):
+    monkeypatch.setenv("LAB_AGENT_DATA_PATH", str(tmp_path / "data"))
+    client = TestClient(app)
+
+    summary = client.get(
+        "/v1/library/summary?project_id=mouse-neuro-demo",
+        headers=headers("student-demo"),
+    )
+    assert summary.status_code == 200
+    assert summary.json()["documents"] >= 1
+
+    denied = client.post(
+        "/v1/literature/import",
+        headers=headers("student-demo"),
+        json={"project_id": "mouse-neuro-demo", "query": "mouse brain", "limit": 1},
+    )
+    assert denied.status_code == 403
+
+    monkeypatch.setattr(
+        "app.main.import_open_access_literature",
+        lambda *args, **kwargs: LiteratureImportResult(
+            query="mouse brain", requested=1, downloaded=1, created=1, duplicates=0
+        ),
+    )
+    imported = client.post(
+        "/v1/literature/import",
+        headers=headers("research-demo"),
+        json={"project_id": "mouse-neuro-demo", "query": "mouse brain", "limit": 1},
+    )
+    assert imported.status_code == 200
+    assert imported.json()["created"] == 1
+
+    monkeypatch.setattr(
+        "app.main.import_research_direction",
+        lambda *args, **kwargs: LiteratureImportResult(
+            query="Alzheimer hippocampus mouse",
+            requested=50,
+            downloaded=50,
+            created=50,
+            duplicates=0,
+            direction="小鼠海马与阿尔茨海默病",
+        ),
+    )
+    direction = client.post(
+        "/v1/literature/direction-import",
+        headers=headers("research-demo"),
+        json={
+            "project_id": "mouse-neuro-demo",
+            "direction": "小鼠海马与阿尔茨海默病",
+            "limit": 50,
+        },
+    )
+    assert direction.status_code == 200
+    assert direction.json()["query"] == "Alzheimer hippocampus mouse"
