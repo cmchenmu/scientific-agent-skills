@@ -266,6 +266,18 @@ class LocalArchive:
             "project_roles": project_roles,
         }
 
+    def project_role_names(self, project_name: str) -> list[str]:
+        """Return roles already assigned in a project for inherited document ACLs."""
+        self.initialize()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT DISTINCT ur.role_name FROM user_roles ur
+                   JOIN projects p ON p.id = ur.project_id WHERE p.name = ?
+                   ORDER BY ur.role_name""",
+                (project_name,),
+            ).fetchall()
+        return [row["role_name"] for row in rows]
+
     def search(
         self, project_name: str, roles: Iterable[str], query: str, limit: int = 10
     ) -> list[dict[str, Any]]:

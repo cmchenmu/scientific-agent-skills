@@ -12,7 +12,7 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +21,10 @@ from pydantic import BaseModel, Field
 from app.demo import DEMO_PROJECT, ensure_demo_data
 from app.services.admin_adapter import AdapterError, LocalAdminAdapter, Preview
 from app.services.knowledge import KnowledgeAnswer, KnowledgeService
+from app.services.literature_collection import (
+    CollectionError,
+    LiteratureCollectionService,
+)
 from app.services.local_archive import LocalArchive
 from app.services.manuscript_workflow import ManuscriptWorkflow, WorkflowError
 
@@ -56,6 +60,12 @@ class ApprovalDecision(BaseModel):
     decision: str = Field(pattern="^(approved|rejected)$")
 
 
+class LiteratureCollectionRequest(BaseModel):
+    project_id: str = Field(min_length=1, max_length=120)
+    domain: str = Field(min_length=1, max_length=500)
+    article_count: int = Field(ge=50, le=100)
+
+
 def _data_root() -> Path:
     return Path(os.getenv("LAB_AGENT_DATA_PATH", "data"))
 
@@ -71,6 +81,10 @@ def _adapter() -> LocalAdminAdapter:
 
 def _workflow() -> ManuscriptWorkflow:
     return ManuscriptWorkflow(_data_root() / "workflows", _archive())
+
+
+def _literature() -> LiteratureCollectionService:
+    return LiteratureCollectionService(_data_root() / "literature-collections", _archive())
 
 
 def current_user(x_user_id: str | None) -> dict[str, Any]:
@@ -116,6 +130,41 @@ def session(x_user_id: str | None = Header(default=None)) -> dict[str, Any]:
 def query_knowledge(request: KnowledgeQuery, x_user_id: str | None = Header(default=None)) -> KnowledgeAnswer:
     user = current_user(x_user_id)
     return KnowledgeService(_archive()).answer_question(user["id"], request.question, request.project_id)
+
+
+@app.post("/v1/literature/collections", status_code=202)
+def create_literature_collection(
+    request: LiteratureCollectionRequest,
+    background_tasks: BackgroundTasks,
+    x_user_id: str | None = Header(default=None),
+) -> dict[str, str]:
+    user = current_user(x_user_id)
+    if not set(user["project_roles"].get(request.project_id, [])).intersection(
+        {"research-assistant", "pi"}
+    ):
+        raise HTTPException(status_code=403, detail="only research assistants or PIs can collect literature")
+    archive = _archive()
+    roles = archive.project_role_names(request.project_id)
+    if not roles:
+        raise HTTPException(status_code=403, detail="project has no server-owned role assignments")
+    task_id = _literature().create(user["id"], request.project_id, request.domain, request.article_count)
+    background_tasks.add_task(_literature().run, task_id, roles)
+    return {"collection_id": task_id, "state": "queued"}
+
+
+@app.get("/v1/literature/collections")
+def list_literature_collections(x_user_id: str | None = Header(default=None)) -> list[dict[str, Any]]:
+    user = current_user(x_user_id)
+    return _literature().list_for_user(user["id"], is_admin="admin" in user["roles"])
+
+
+@app.get("/v1/literature/collections/{collection_id}")
+def get_literature_collection(collection_id: str, x_user_id: str | None = Header(default=None)) -> dict[str, Any]:
+    user = current_user(x_user_id)
+    try:
+        return _literature().get(collection_id, user["id"], is_admin="admin" in user["roles"])
+    except CollectionError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @app.post("/v1/chat/stream")

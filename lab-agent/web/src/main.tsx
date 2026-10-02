@@ -7,6 +7,7 @@ const project = 'mouse-neuro-demo'
 type Citation = { document_id: string; chunk_id: string; title: string; section?: string; page?: number }
 type Answer = { answer: string; status: string; citations: Citation[]; confidence: number }
 type Task = { id: string; state: string; request_type: string }
+type Collection = { id: string; domain: string; state: string; requested_count: number; discovered_count: number; imported_count: number; duplicate_count: number; failed_count: number; error?: string }
 
 function request(path: string, user: string, options: RequestInit = {}) {
   return fetch(`${api}${path}`, {
@@ -25,13 +26,27 @@ function App() {
   const [description, setDescription] = useState('演示出租车费')
   const [actionId, setActionId] = useState<string | null>(null)
   const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID())
+  const [domain, setDomain] = useState('hippocampus neural circuits')
+  const [articleCount, setArticleCount] = useState('50')
+  const [collections, setCollections] = useState<Collection[]>([])
 
   const loadTasks = async () => {
     const response = await request('/v1/tasks', user)
     if (response.ok) setTasks(await response.json() as Task[])
   }
 
-  useEffect(() => { void loadTasks() }, [user])
+  const loadCollections = async () => {
+    const response = await request('/v1/literature/collections', user)
+    if (response.ok) setCollections(await response.json() as Collection[])
+  }
+
+  useEffect(() => { void loadTasks(); void loadCollections() }, [user])
+
+  useEffect(() => {
+    if (!collections.some((collection) => collection.state === 'queued' || collection.state === 'running')) return undefined
+    const timer = window.setInterval(() => void loadCollections(), 3000)
+    return () => window.clearInterval(timer)
+  }, [collections])
 
   const ask = async () => {
     setMessage('正在检索已授权知识库...')
@@ -56,6 +71,17 @@ function App() {
     setActionId(result.action_id)
     setMessage(`已创建待审批任务：${result.action_id}`)
     await loadTasks()
+  }
+
+  const collectLiterature = async () => {
+    setMessage('正在创建开放获取文献收集任务...')
+    const response = await request('/v1/literature/collections', user, {
+      method: 'POST', body: JSON.stringify({ project_id: project, domain, article_count: Number(articleCount) }),
+    })
+    if (!response.ok) { setMessage(await response.text()); return }
+    const result = await response.json() as { collection_id: string }
+    setMessage(`文献收集任务已启动：${result.collection_id}。下载和入库在后台继续执行。`)
+    await loadCollections()
   }
 
   const approveAndConfirm = async () => {
@@ -85,6 +111,14 @@ function App() {
         <option value="student-demo">Student Demo</option><option value="research-demo">Research Assistant Demo</option><option value="pi-demo">PI Demo</option>
       </select></label>
       <span style={{ marginLeft: 14 }}>项目：{project}</span>
+    </section>
+    <section style={sectionStyle}>
+      <h2>开放获取文献收集</h2>
+      <p>描述研究领域。系统仅从 Europe PMC 收集带 PMC 全文的开放获取研究文章，并按项目 ACL 入库。</p>
+      <label>领域/检索表达式 <input value={domain} onChange={(event) => setDomain(event.target.value)} style={{ minWidth: 300 }} /></label>
+      <label style={{ marginLeft: 12 }}>篇数 <input value={articleCount} onChange={(event) => setArticleCount(event.target.value)} inputMode="numeric" style={{ width: 52 }} /></label>
+      <p><button onClick={() => void collectLiterature()} style={buttonStyle}>下载并处理 50-100 篇论文</button></p>
+      {collections.length > 0 && <ul>{collections.map((collection) => <li key={collection.id}>{collection.domain} · {collection.state} · 已发现 {collection.discovered_count}/{collection.requested_count}，已入库 {collection.imported_count}，重复 {collection.duplicate_count}，失败 {collection.failed_count}{collection.error ? `，错误：${collection.error}` : ''}</li>)}</ul>}
     </section>
     <section style={sectionStyle}>
       <h2>知识问答</h2>
