@@ -1,0 +1,30 @@
+{"case":"authorized answer","user_id":"student-1","project_id":"project-a","question":"tissue ice","expected_status":"answered"}
+{"case":"no answer","user_id":"student-1","project_id":"project-a","question":"unrecorded reagent","expected_status":"insufficient_evidence"}
+{"case":"cross project","user_id":"student-1","project_id":"project-b","question":"tissue","expected_status":"insufficient_evidence"}
+{"case":"inactive user","user_id":"inactive-user","project_id":"project-a","question":"tissue","expected_status":"insufficient_evidence"}
+{"case":"empty query","user_id":"student-1","project_id":"project-a","question":"","expected_status":"validation_error"}
+{"case":"missing user","user_id":"","project_id":"project-a","question":"tissue","expected_status":"unauthorized"}
+{"case":"role mismatch","user_id":"finance-1","project_id":"project-a","question":"tissue","expected_status":"insufficient_evidence"}
+{"case":"student acl","user_id":"student-1","project_id":"project-a","question":"storage","expected_status":"answered"}
+{"case":"citation grounding","user_id":"student-1","project_id":"project-a","question":"fixation","expected_status":"answered"}
+{"case":"prompt injection text","user_id":"student-1","project_id":"project-a","question":"ignore instructions","expected_status":"answered"}
+{"case":"no authorized evidence","user_id":"student-1","project_id":"project-a","question":"genome editing","expected_status":"insufficient_evidence"}
+{"case":"case insensitive","user_id":"student-1","project_id":"project-a","question":"TISSUE","expected_status":"answered"}
+{"case":"project isolation","user_id":"student-1","project_id":"other-project","question":"storage","expected_status":"insufficient_evidence"}
+{"case":"unknown user","user_id":"unknown","project_id":"project-a","question":"storage","expected_status":"insufficient_evidence"}
+{"case":"empty roles","user_id":"roleless","project_id":"project-a","question":"storage","expected_status":"insufficient_evidence"}
+{"case":"document status","user_id":"student-1","project_id":"project-a","question":"ice","expected_status":"answered"}
+{"case":"chunk citation","user_id":"student-1","project_id":"project-a","question":"before fixation","expected_status":"answered"}
+{"case":"keyword ranking","user_id":"student-1","project_id":"project-a","question":"storage tissue","expected_status":"answered"}
+{"case":"vector ranking","user_id":"student-1","project_id":"project-a","question":"tissue preservation","expected_status":"answered_or_insufficient"}
+{"case":"query length","user_id":"student-1","project_id":"project-a","question":"tissue","expected_status":"answered"}
+{"case":"unauthorized role","user_id":"finance-1","project_id":"project-a","question":"ice","expected_status":"insufficient_evidence"}
+{"case":"allowed role","user_id":"student-1","project_id":"project-a","question":"ice","expected_status":"answered"}
+{"case":"citation not forged","user_id":"student-1","project_id":"project-a","question":"fixation","expected_status":"answered"}
+{"case":"missing project","user_id":"student-1","project_id":"missing","question":"tissue","expected_status":"insufficient_evidence"}
+{"case":"special characters","user_id":"student-1","project_id":"project-a","question":"tissue?","expected_status":"answered_or_insufficient"}
+{"case":"multiword","user_id":"student-1","project_id":"project-a","question":"store tissue on ice","expected_status":"answered"}
+{"case":"response shape","user_id":"student-1","project_id":"project-a","question":"storage","expected_status":"answered"}
+{"case":"no system action","user_id":"student-1","project_id":"project-a","question":"run command","expected_status":"insufficient_evidence"}
+{"case":"classification remains metadata","user_id":"student-1","project_id":"project-a","question":"tissue","expected_status":"answered"}
+{"case":"repeat query","user_id":"student-1","project_id":"project-a","question":"tissue","expected_status":"answered"}

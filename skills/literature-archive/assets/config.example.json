@@ -1,0 +1,19 @@
+{
+  "database": "/absolute/path/research/literature-archive/literature.sqlite3",
+  "pdf_directory": "/absolute/path/research/literature-archive/pdfs",
+  "sources": ["openalex", "europepmc"],
+  "queries": [
+    {
+      "id": "spatial-transcriptomics",
+      "query": "spatial transcriptomics foundation model",
+      "from_year": 2023,
+      "max_results_per_source": 50
+    }
+  ],
+  "download": {
+    "enabled": true,
+    "max_pdfs_per_run": 10,
+    "max_pdf_bytes": 52428800,
+    "timeout_seconds": 30
+  }
+}

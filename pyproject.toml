@@ -23,3 +23,8 @@ testpaths = ["tests"]
 # look installed to importlib.util.find_spec(). importlib mode touches sys.path
 # not at all.
 addopts = "--import-mode=importlib"
+
+[tool.uv.workspace]
+members = [
+    "lab-agent",
+]

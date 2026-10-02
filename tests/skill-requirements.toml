@@ -21,6 +21,12 @@
 [defaults]
 python = "3.13"
 
+[skills.literature-archive]
+packages = []
+
+[skills.literature-method-extraction]
+packages = []
+
 # --- output formats and writing -------------------------------------------
 
 [skills.docx]
