@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
-const api = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
+const api = import.meta.env.VITE_API_URL ?? ''
 const project = 'mouse-neuro-demo'
 
 type Citation = { document_id: string; chunk_id: string; title: string; section?: string; page?: number }

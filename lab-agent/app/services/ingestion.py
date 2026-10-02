@@ -158,7 +158,7 @@ def hash_embedding(text: str, dimensions: int = EMBEDDING_DIMENSIONS) -> list[fl
     if dimensions < 1:
         raise ValueError("dimensions must be positive")
     values = [0.0] * dimensions
-    for token in re.findall(r"[a-z0-9]+", text.lower()):
+    for token in re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]", text.lower()):
         index = (
             int.from_bytes(hashlib.sha256(token.encode()).digest()[:4], "big")
             % dimensions

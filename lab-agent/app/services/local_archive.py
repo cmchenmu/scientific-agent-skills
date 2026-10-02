@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 import uuid
@@ -292,7 +293,7 @@ class LocalArchive:
         """Hybrid search with authorization embedded in the candidate SQL query."""
         if not query.strip() or limit < 1:
             return []
-        terms = [term.lower() for term in query.split() if term.strip()]
+        terms = re.findall(r"[a-z0-9]+|[\u4e00-\u9fff]", query.lower())
         vector = hash_embedding(query)
         sql = """
             SELECT DISTINCT c.id, d.id AS document_id, d.title, c.text, c.embedding, c.metadata

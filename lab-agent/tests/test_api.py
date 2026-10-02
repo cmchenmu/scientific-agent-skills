@@ -23,6 +23,14 @@ def test_demo_session_query_and_sse(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert response.json()["citations"]
 
+    chinese = client.post(
+        "/v1/knowledge/query",
+        headers=headers("student-demo"),
+        json={"project_id": "mouse-neuro-demo", "question": "组织固定前应如何保存？"},
+    )
+    assert chinese.status_code == 200
+    assert chinese.json()["status"] == "answered"
+
     stream = client.post(
         "/v1/chat/stream",
         headers=headers("student-demo"),
