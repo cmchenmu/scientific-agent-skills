@@ -1,6 +1,6 @@
 ssh -T git@github.com
 git add .
-git commit -m "实现全流程跑通,增加一个自动下载文档并处理功能"
+git commit -m "面试知识点项目体现"
 git push
 
 git remote set-url origin git@github-personal:YoungLee1995/scientific-agent-skills.git
