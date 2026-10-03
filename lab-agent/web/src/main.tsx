@@ -5,7 +5,9 @@ const api = import.meta.env.VITE_API_URL ?? ''
 const project = 'mouse-neuro-demo'
 
 type Citation = { document_id: string; chunk_id: string; title: string; section?: string; page?: number }
-type Answer = { answer: string; status: string; citations: Citation[]; confidence: number }
+type KeyInformation = { chunk_id: string; section?: string; page?: number; text: string }
+type RelatedPaper = { document_id: string; title: string; key_information: KeyInformation[] }
+type Answer = { answer: string; status: string; citations: Citation[]; related_papers: RelatedPaper[]; literature_query?: string | null; confidence: number }
 type Task = { id: string; state: string; request_type: string }
 type LibrarySummary = { documents: number; chunks: number }
 type LiteratureImport = { query: string; requested: number; downloaded: number; created: number; duplicates: number; direction?: string }
@@ -42,6 +44,7 @@ function App() {
   const [candidateQuery, setCandidateQuery] = useState<string | null>(null)
   const [paperQuery, setPaperQuery] = useState('mouse hippocampus')
   const [papers, setPapers] = useState<Paper[]>([])
+  const [papersLinkedFromKnowledge, setPapersLinkedFromKnowledge] = useState(false)
   const [experiment, setExperiment] = useState<Experiment | null>(null)
   const [catalogQuery, setCatalogQuery] = useState('mouse hippocampus')
   const [catalog, setCatalog] = useState<CatalogPaper[]>([])
@@ -55,7 +58,7 @@ function App() {
   const [inspectionErrors, setInspectionErrors] = useState<Record<string, string>>({})
   const [expandedInspections, setExpandedInspections] = useState<string[]>([])
   const [catalogSort, setCatalogSort] = useState('relevance')
-  const [catalogDisplayMode, setCatalogDisplayMode] = useState('all')
+  const [catalogDisplayMode, setCatalogDisplayMode] = useState('with_data_or_images')
   const [selectedPmcids, setSelectedPmcids] = useState<string[]>([])
   const [libraryDocuments, setLibraryDocuments] = useState<LibraryDocument[]>([])
 
@@ -82,8 +85,24 @@ function App() {
       method: 'POST', body: JSON.stringify({ project_id: project, question }),
     })
     if (!response.ok) { setMessage(await response.text()); return }
-    setAnswer(await response.json() as Answer)
-    setMessage('')
+    const result = await response.json() as Answer
+    setAnswer(result)
+    setPaperQuery(question)
+    setPapers(result.related_papers.map((paper, index) => ({
+      document_id: paper.document_id,
+      title: paper.title,
+      score: result.related_papers.length - index,
+      snippet: paper.key_information.map((item) => item.text).join(' '),
+      section: paper.key_information[0]?.section,
+    })))
+    setExperiment(null)
+    setPapersLinkedFromKnowledge(result.related_papers.length > 0)
+    if (result.literature_query) {
+      setCatalogQuery(result.literature_query)
+      setCatalogDisplayMode('with_data_or_images')
+      await searchCatalog(result.literature_query, 1, 'relevance', 'with_data_or_images')
+      setMessage(`已用关键词“${result.literature_query}”自动检索可下载论文，并将相关原文带入下方实验提取。`)
+    } else setMessage(result.related_papers.length ? '已将相关论文和关键原文信息带入下方“论文实验提取”；未能生成开放论文检索关键词。' : '')
   }
 
   const createAction = async () => {
@@ -129,6 +148,13 @@ function App() {
     setMessage(result.candidate_query ? `候选检索式：${result.candidate_query}。请确认后再导入。` : result.answer)
   }
 
+  const openCandidateCatalog = async () => {
+    if (!candidateQuery?.trim()) return
+    setCatalogQuery(candidateQuery)
+    await searchCatalog(candidateQuery, 1)
+    document.getElementById('catalog-search')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   const searchPapers = async () => {
     setMessage('正在检索项目中已授权的论文...')
     const response = await request('/v1/literature/search', user, {
@@ -136,6 +162,7 @@ function App() {
     })
     if (!response.ok) { setMessage(await response.text()); return }
     setPapers(await response.json() as Paper[])
+    setPapersLinkedFromKnowledge(false)
     setExperiment(null)
     setMessage('')
   }
@@ -255,7 +282,7 @@ function App() {
   return <main style={{ maxWidth: 980, margin: '32px auto', fontFamily: 'system-ui, sans-serif', color: '#172033', padding: '0 20px' }}>
     <header style={{ borderBottom: '1px solid #d9e0e8', paddingBottom: 18 }}>
       <h1 style={{ margin: 0 }}>Lab Agent</h1>
-      <p style={{ marginBottom: 0 }}>本地开发演示：ACL 知识问答、论文工作流基础能力与受控行政审批。</p>
+      <p style={{ marginBottom: 0 }}>知识检索联动开放论文搜索、入库与实验信息提取；各模块也支持独立使用。</p>
     </header>
     <section style={sectionStyle}>
       <label>开发身份 <select value={user} onChange={(event) => setUser(event.target.value)}>
@@ -263,14 +290,15 @@ function App() {
       </select></label>
       <span style={{ marginLeft: 14 }}>项目：{project}</span>
     </section>
-    <section style={sectionStyle}>
-      <h2>知识问答</h2>
+    <section id="catalog-search" style={sectionStyle}>
+      <h2>1. 知识检索与联动摘要</h2>
       <textarea value={question} onChange={(event) => setQuestion(event.target.value)} rows={3} style={{ width: '100%', boxSizing: 'border-box' }} />
       <button onClick={() => void ask()} style={buttonStyle}>检索已授权证据</button>
-      {answer && <div style={resultStyle}><strong>{answer.status}</strong><p>{answer.answer}</p>{answer.citations.map((citation) => <p key={citation.chunk_id}><small>引用：{citation.title} · {citation.section ?? `第 ${citation.page} 页`} · {citation.document_id}</small></p>)}</div>}
+      {answer && <div style={resultStyle}><strong>{answer.status}</strong><p>{answer.answer}</p>{answer.literature_query && <p><small>已自动用于论文检索的关键词：{answer.literature_query}</small></p>}<strong>出处</strong>{answer.citations.map((citation) => <p key={citation.chunk_id}><small>{citation.title} · {citation.section ?? `第 ${citation.page} 页`} · {citation.document_id}</small></p>)}</div>}
     </section>
     <section style={sectionStyle}>
-      <h2>搜索并选择下载论文</h2>
+      <h2>2. 开放论文检索与选择下载</h2>
+      <p><small>知识检索完成后会自动带入关键词并搜索；也可在本模块独立输入关键词。默认优先显示可展示数据表或图片的论文，可切换为全部论文。</small></p>
       <label>搜索关键词 <input value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} style={{ minWidth: 280 }} /></label>
       <label style={{ marginLeft: 12 }}>排序 <select value={catalogSort} onChange={(event) => { setCatalogSort(event.target.value); void searchCatalog(catalogQuery, 1, event.target.value) }}><option value="relevance">相关性</option><option value="year_desc">发表年份（新到旧）</option><option value="impact_factor_desc">影响因子（高到低）</option></select></label>
       <label style={{ marginLeft: 12 }}>展示 <select value={catalogDisplayMode} onChange={(event) => { const mode = event.target.value; setCatalogDisplayMode(mode); void searchCatalog(catalogQuery, 1, catalogSort, mode) }}><option value="all">显示全部论文</option><option value="with_data_or_images">仅显示可展示数据或图片的论文</option></select></label>
@@ -283,14 +311,16 @@ function App() {
       </div>}
     </section>
     <section style={sectionStyle}>
-      <h2>我的论文库</h2>
+      <h2>3. 我的论文库</h2>
       <p>{libraryDocuments.length ? `已授权 ${libraryDocuments.length} 篇论文。` : '暂无可访问的已下载论文。'}</p>
       {libraryDocuments.length > 0 && <div style={{ maxHeight: 420, overflowY: 'auto', border: '1px solid #d9e0e8', padding: '0 10px' }}>{libraryDocuments.map((paper) => <div key={paper.document_id} style={{ borderTop: '1px solid #d9e0e8', padding: '10px 0' }}><strong>{paper.title}</strong><br /><small>来源：{paper.source} · 入库：{paper.effective_at} · 状态：{paper.status} · 格式：{paper.source_format}</small><br /><button onClick={() => void downloadOriginal(paper)} style={buttonStyle}>下载原文</button>{user !== 'student-demo' && <button onClick={() => void removeDocument(paper)} style={{ ...buttonStyle, marginLeft: 8, background: '#b42318' }}>删除</button>}</div>)}</div>}
     </section>
-    <section style={sectionStyle}>
-      <h2>论文实验提取</h2>
+    <section id="paper-extraction" style={sectionStyle}>
+      <h2>4. 已入库论文实验提取</h2>
+      <p><small>知识检索命中的本地论文会自动带入；也可在本模块独立检索已入库论文。</small></p>
       <label>关键词 <input value={paperQuery} onChange={(event) => setPaperQuery(event.target.value)} style={{ minWidth: 280 }} /></label>
       <button onClick={() => void searchPapers()} style={{ ...buttonStyle, marginLeft: 8 }}>检索前五篇论文</button>
+      {papersLinkedFromKnowledge && <p><small>以下论文由上方知识检索自动联动；每篇卡片展示该次检索命中的关键原文信息。</small></p>}
       {papers.length > 0 && <div style={{ marginTop: 12 }}>{papers.map((paper) => <button key={paper.document_id} onClick={() => void selectPaper(paper)} style={{ display: 'block', width: '100%', textAlign: 'left', marginBottom: 7, padding: 10, border: '1px solid #cbd5e1', background: '#fff', borderRadius: 4, cursor: 'pointer' }}><strong>{paper.title}</strong><br /><small>{paper.section ?? '正文'} · {paper.snippet}</small></button>)}</div>}
       {experiment && <div style={resultStyle}>
         <h3 style={{ marginTop: 0 }}>{experiment.title}</h3>
@@ -306,11 +336,13 @@ function App() {
     </section>
     <section style={sectionStyle}>
       <h2>研究方向助手</h2>
+      <p>将科研方向转换为 Europe PMC 候选检索关键词，帮助从研究主题进入开放论文搜索。</p>
       <p>{library ? `当前项目：${library.documents} 篇文档，${library.chunks} 个可检索片段。` : '正在读取知识库统计...'}</p>
       <label>科研方向 <textarea value={researchDirection} onChange={(event) => setResearchDirection(event.target.value)} rows={3} style={{ width: '100%', boxSizing: 'border-box' }} /></label>
-      <p><button onClick={() => void proposeLiteratureQuery()} style={buttonStyle}>生成候选检索式</button>{candidateQuery && <button onClick={() => { setCatalogQuery(candidateQuery); void searchCatalog(candidateQuery) }} style={{ ...buttonStyle, marginLeft: 8 }}>查看可下载论文</button>}</p>
-      {candidateQuery && <p><code>{candidateQuery}</code></p>}
-      <small>模型只能生成候选查询。选择下载是独立操作，只显示开放获取 PMC 全文，且需要 Research Assistant 或 PI 身份。</small>
+      <p><button onClick={() => void proposeLiteratureQuery()} style={buttonStyle}>生成候选检索式</button>{candidateQuery && <button onClick={() => void openCandidateCatalog()} style={{ ...buttonStyle, marginLeft: 8 }}>查看可下载论文</button>} {candidateQuery && <small>点击后将在“开放论文检索与选择下载”区域搜索并自动跳转。</small>}</p>
+      {candidateQuery && <label>候选检索式（可编辑、复制）<textarea value={candidateQuery} onChange={(event) => setCandidateQuery(event.target.value)} rows={2} style={{ width: '100%', boxSizing: 'border-box', marginTop: 6 }} /></label>}
+      <p><small>使用方式：输入研究对象、疾病或现象、物种、模型等信息，生成候选检索式后检查关键词，再点击“查看可下载论文”。</small></p>
+      <small>该功能只生成候选查询，不会自动下载或入库。论文下载是独立操作，只显示开放获取 PMC 全文，且需要 Research Assistant 或 PI 身份。</small>
     </section>
     <section style={sectionStyle}>
       <h2>模拟报销</h2>

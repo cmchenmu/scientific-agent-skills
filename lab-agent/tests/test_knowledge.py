@@ -29,6 +29,8 @@ def test_authorized_answer_has_grounded_citation(tmp_path: Path):
     assert answer.status == "answered"
     assert answer.citations[0].chunk_id
     assert "ice" in answer.answer
+    assert answer.related_papers[0].title == "Tissue SOP"
+    assert answer.related_papers[0].key_information[0].chunk_id
 
 
 def test_cross_project_and_inactive_user_are_refused(tmp_path: Path):

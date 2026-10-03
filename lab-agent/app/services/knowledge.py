@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.services.literature_import import research_direction_query
 from app.services.local_archive import LocalArchive
 
 
@@ -17,9 +18,24 @@ class Citation(BaseModel):
     page: int | None = None
 
 
+class KeyInformation(BaseModel):
+    chunk_id: str
+    section: str | None = None
+    page: int | None = None
+    text: str
+
+
+class RelatedPaper(BaseModel):
+    document_id: str
+    title: str
+    key_information: list[KeyInformation] = Field(default_factory=list)
+
+
 class KnowledgeAnswer(BaseModel):
     answer: str
     citations: list[Citation] = Field(default_factory=list)
+    related_papers: list[RelatedPaper] = Field(default_factory=list)
+    literature_query: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)
     missing_information: list[str] = Field(default_factory=list)
     status: str
@@ -62,19 +78,39 @@ class KnowledgeService:
                 missing_information=["authorized evidence"],
                 status="insufficient_evidence",
             )
-        evidence = retrieved[0]
-        metadata = evidence["metadata"]
-        citation = Citation(
-            document_id=evidence["document_id"],
-            chunk_id=evidence["id"],
-            title=evidence["title"],
-            section=metadata.get("section"),
-            page=metadata.get("page"),
-        )
-        validate_citations([citation], retrieved)
+        papers: dict[str, RelatedPaper] = {}
+        citations: list[Citation] = []
+        summary_parts: list[str] = []
+        for evidence in retrieved:
+            metadata = evidence["metadata"]
+            citation = Citation(
+                document_id=evidence["document_id"], chunk_id=evidence["id"],
+                title=evidence["title"], section=metadata.get("section"), page=metadata.get("page"),
+            )
+            paper = papers.setdefault(
+                evidence["document_id"],
+                RelatedPaper(document_id=evidence["document_id"], title=evidence["title"]),
+            )
+            if len(paper.key_information) < 3:
+                paper.key_information.append(KeyInformation(
+                    chunk_id=evidence["id"], section=metadata.get("section"),
+                    page=metadata.get("page"), text=evidence["text"],
+                ))
+            if len(summary_parts) < 3 and len(citations) < 3:
+                summary_parts.append(evidence["text"])
+                citations.append(citation)
+        validate_citations(citations, retrieved)
+        try:
+            literature_query = research_direction_query(
+                question + " " + " ".join(summary_parts)
+            )
+        except ValueError:
+            literature_query = None
         return KnowledgeAnswer(
-            answer=evidence["text"],
-            citations=[citation],
-            confidence=min(0.9, max(0.2, evidence["score"] / 3)),
+            answer="基于已授权原文证据的总结：" + " ".join(summary_parts),
+            citations=citations,
+            related_papers=list(papers.values())[:5],
+            literature_query=literature_query,
+            confidence=min(0.9, max(0.2, retrieved[0]["score"] / 3)),
             status="answered",
         )
