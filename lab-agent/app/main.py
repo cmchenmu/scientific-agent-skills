@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from app.demo import DEMO_PROJECT, ensure_demo_data
 from app.services.admin_adapter import AdapterError, LocalAdminAdapter, Preview
+from app.services.agent import AgentRun, AgentService
 from app.services.knowledge import KnowledgeAnswer, KnowledgeService
 from app.services.literature_import import (
     LiteratureImportResult,
@@ -42,6 +43,12 @@ app.add_middleware(
 class KnowledgeQuery(BaseModel):
     project_id: str = Field(min_length=1)
     question: str = Field(min_length=1, max_length=4_000)
+
+
+class AgentRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    request: str = Field(min_length=1, max_length=4_000)
+    mode: str = Field(default="knowledge", pattern="^(knowledge|literature_query)$")
 
 
 class ReimbursementPayload(BaseModel):
@@ -102,7 +109,10 @@ def current_user(x_user_id: str | None) -> dict[str, Any]:
         raise HTTPException(status_code=401, detail="unknown or inactive development user")
     roles = sorted({role for values in context["project_roles"].values() for role in values})
     allowed_tools = {
-        project: {"admin.get_policy", "admin.validate_draft", "admin.create_task", "admin.submit_reimbursement"}
+        project: {
+            "admin.get_policy", "admin.validate_draft", "admin.create_task",
+            "admin.submit_reimbursement", "agent.propose_literature_query",
+        }
         for project, project_roles in context["project_roles"].items()
         if set(project_roles).intersection({"research-assistant", "pi"})
     }
@@ -135,13 +145,26 @@ def query_knowledge(request: KnowledgeQuery, x_user_id: str | None = Header(defa
     return KnowledgeService(_archive()).answer_question(user["id"], request.question, request.project_id)
 
 
+@app.post("/v1/agent/run", response_model=AgentRun)
+def run_agent(request: AgentRequest, x_user_id: str | None = Header(default=None)) -> AgentRun:
+    user = current_user(x_user_id)
+    if request.project_id not in user["project_roles"] and "admin" not in user["roles"]:
+        raise HTTPException(status_code=403, detail="project is not visible to this user")
+    return AgentService(KnowledgeService(_archive())).run(
+        user,
+        request.project_id,
+        request.request,
+        prefer_candidate_query=request.mode == "literature_query",
+    )
+
+
 @app.post("/v1/chat/stream")
 def chat_stream(request: KnowledgeQuery, x_user_id: str | None = Header(default=None)) -> StreamingResponse:
     user = current_user(x_user_id)
-    answer = KnowledgeService(_archive()).answer_question(user["id"], request.question, request.project_id)
+    answer = AgentService(KnowledgeService(_archive())).run(user, request.project_id, request.question)
 
     def events() -> Generator[str, None, None]:
-        yield f"event: answer\ndata: {json.dumps({'answer': answer.answer, 'status': answer.status}, ensure_ascii=False)}\n\n"
+        yield f"event: answer\ndata: {json.dumps({'answer': answer.answer, 'status': answer.status, 'model_used': answer.model_used}, ensure_ascii=False)}\n\n"
         for citation in answer.citations:
             yield f"event: citation\ndata: {citation.model_dump_json()}\n\n"
         yield "event: done\ndata: {}\n\n"

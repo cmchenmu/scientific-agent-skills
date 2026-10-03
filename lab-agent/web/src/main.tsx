@@ -9,6 +9,7 @@ type Answer = { answer: string; status: string; citations: Citation[]; confidenc
 type Task = { id: string; state: string; request_type: string }
 type LibrarySummary = { documents: number; chunks: number }
 type LiteratureImport = { query: string; requested: number; downloaded: number; created: number; duplicates: number; direction?: string }
+type AgentRun = Answer & { candidate_query?: string; executed_tools: string[]; model_used: boolean }
 
 function request(path: string, user: string, options: RequestInit = {}) {
   return fetch(`${api}${path}`, {
@@ -31,6 +32,7 @@ function App() {
   const [literatureCount, setLiteratureCount] = useState('100')
   const [library, setLibrary] = useState<LibrarySummary | null>(null)
   const [importing, setImporting] = useState(false)
+  const [candidateQuery, setCandidateQuery] = useState<string | null>(null)
 
   const loadTasks = async () => {
     const response = await request('/v1/tasks', user)
@@ -89,14 +91,25 @@ function App() {
   const importResearchDirection = async () => {
     setImporting(true)
     setMessage('正在从 Europe PMC 下载开放获取全文并建立本地索引；100 篇可能需要数分钟。')
-    const response = await request('/v1/literature/direction-import', user, {
-      method: 'POST', body: JSON.stringify({ project_id: project, direction: researchDirection, limit: Number(literatureCount) }),
+    const response = await request('/v1/literature/import', user, {
+      method: 'POST', body: JSON.stringify({ project_id: project, query: candidateQuery, limit: Number(literatureCount) }),
     })
     setImporting(false)
     if (!response.ok) { setMessage(await response.text()); return }
     const result = await response.json() as LiteratureImport
     setMessage(`文献入库完成：检索 ${result.query}；下载 ${result.downloaded} 篇，新增 ${result.created} 篇，重复 ${result.duplicates} 篇。`)
     await loadLibrary()
+  }
+
+  const proposeLiteratureQuery = async () => {
+    setMessage('正在在受限工具集合内生成候选检索式...')
+    const response = await request('/v1/agent/run', user, {
+      method: 'POST', body: JSON.stringify({ project_id: project, request: researchDirection, mode: 'literature_query' }),
+    })
+    if (!response.ok) { setMessage(await response.text()); return }
+    const result = await response.json() as AgentRun
+    setCandidateQuery(result.candidate_query ?? null)
+    setMessage(result.candidate_query ? `候选检索式：${result.candidate_query}。请确认后再导入。` : result.answer)
   }
 
   return <main style={{ maxWidth: 980, margin: '32px auto', fontFamily: 'system-ui, sans-serif', color: '#172033', padding: '0 20px' }}>
@@ -121,8 +134,9 @@ function App() {
       <p>{library ? `当前项目：${library.documents} 篇文档，${library.chunks} 个可检索片段。` : '正在读取知识库统计...'}</p>
       <label>科研方向 <textarea value={researchDirection} onChange={(event) => setResearchDirection(event.target.value)} rows={3} style={{ width: '100%', boxSizing: 'border-box' }} /></label>
       <label>论文数量 <select value={literatureCount} onChange={(event) => setLiteratureCount(event.target.value)}><option value="50">50 篇</option><option value="100">100 篇</option></select></label>
-      <p><button onClick={() => void importResearchDirection()} disabled={importing} style={buttonStyle}>{importing ? '正在检索并入库...' : '按研究方向扩充知识库'}</button></p>
-      <small>系统将方向转为可审计的 Europe PMC 查询，只导入开放获取 PMC 全文；Research Assistant 或 PI 演示身份可以执行。</small>
+      <p><button onClick={() => void proposeLiteratureQuery()} style={buttonStyle}>生成候选检索式</button>{candidateQuery && <button onClick={() => void importResearchDirection()} disabled={importing} style={{ ...buttonStyle, marginLeft: 8 }}>{importing ? '正在检索并入库...' : '确认并导入开放全文'}</button>}</p>
+      {candidateQuery && <p><code>{candidateQuery}</code></p>}
+      <small>模型只能生成候选查询；确认导入是独立操作，只导入开放获取 PMC 全文，且需要 Research Assistant 或 PI 身份。</small>
     </section>
     <section style={sectionStyle}>
       <h2>模拟报销</h2>

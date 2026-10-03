@@ -40,6 +40,19 @@ def test_demo_session_query_and_sse(monkeypatch, tmp_path):
     assert stream.status_code == 200
     assert "event: citation" in stream.text
 
+    agent = client.post(
+        "/v1/agent/run",
+        headers=headers("research-demo"),
+        json={
+            "project_id": "mouse-neuro-demo",
+            "request": "小鼠海马神经发生与阿尔茨海默病",
+            "mode": "literature_query",
+        },
+    )
+    assert agent.status_code == 200
+    assert agent.json()["candidate_query"] == "Alzheimer neurogenesis hippocampus mouse"
+    assert agent.json()["model_used"] is False
+
 
 def test_reimbursement_preview_approval_submit_and_visibility(monkeypatch, tmp_path):
     monkeypatch.setenv("LAB_AGENT_DATA_PATH", str(tmp_path / "data"))
