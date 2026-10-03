@@ -11,7 +11,7 @@ type Answer = { answer: string; status: string; citations: Citation[]; related_p
 type Task = { id: string; state: string; request_type: string }
 type LibrarySummary = { documents: number; chunks: number }
 type LiteratureImport = { query: string; requested: number; downloaded: number; created: number; duplicates: number; direction?: string }
-type AgentRun = Answer & { candidate_query?: string; executed_tools: string[]; model_used: boolean }
+type AgentRun = Answer & { run_id: string; candidate_query?: string; executed_tools: string[]; model_used: boolean; max_tool_rounds: number }
 type Paper = { document_id: string; title: string; score: number; snippet: string; section?: string }
 type Evidence = { chunk_id: string; section?: string; page?: number; text: string }
 type Automation = { method: string; script_filename: string; script: string; input_template_filename: string; input_template: string; input_specification: string }
@@ -42,6 +42,7 @@ function App() {
   const [library, setLibrary] = useState<LibrarySummary | null>(null)
   const [importing, setImporting] = useState(false)
   const [candidateQuery, setCandidateQuery] = useState<string | null>(null)
+  const [agentRun, setAgentRun] = useState<AgentRun | null>(null)
   const [paperQuery, setPaperQuery] = useState('mouse hippocampus')
   const [papers, setPapers] = useState<Paper[]>([])
   const [papersLinkedFromKnowledge, setPapersLinkedFromKnowledge] = useState(false)
@@ -144,6 +145,7 @@ function App() {
     })
     if (!response.ok) { setMessage(await response.text()); return }
     const result = await response.json() as AgentRun
+    setAgentRun(result)
     setCandidateQuery(result.candidate_query ?? null)
     setMessage(result.candidate_query ? `候选检索式：${result.candidate_query}。请确认后再导入。` : result.answer)
   }
@@ -284,7 +286,7 @@ function App() {
   return <main style={{ maxWidth: 980, margin: '32px auto', fontFamily: 'system-ui, sans-serif', color: '#172033', padding: '0 20px' }}>
     <header style={{ borderBottom: '1px solid #d9e0e8', paddingBottom: 18 }}>
       <h1 style={{ margin: 0 }}>Lab Agent</h1>
-      <p style={{ marginBottom: 0 }}>知识检索联动开放论文搜索、入库与实验信息提取；各模块也支持独立使用。</p>
+      <p style={{ marginBottom: 0 }}>受控 Agent 编排知识检索、开放论文搜索、入库与实验信息提取；各模块也支持独立使用。</p>
     </header>
     <section style={sectionStyle}>
       <label>开发身份 <select value={user} onChange={(event) => setUser(event.target.value)}>
@@ -336,12 +338,13 @@ function App() {
       </div>}
     </section>
     <section style={sectionStyle}>
-      <h2>4. 研究方向助手</h2>
-      <p>将科研方向转换为 Europe PMC 候选检索关键词，帮助从研究主题进入开放论文搜索。</p>
+      <h2>4. 受控研究 Agent</h2>
+      <p>将科研方向转换为 Europe PMC 候选检索关键词；Agent 只能调用服务端批准的只读工具，下载与入库仍需用户确认。</p>
       <p>{library ? `当前项目：${library.documents} 篇文档，${library.chunks} 个可检索片段。` : '正在读取知识库统计...'}</p>
       <label>科研方向 <textarea value={researchDirection} onChange={(event) => setResearchDirection(event.target.value)} rows={3} style={{ width: '100%', boxSizing: 'border-box' }} /></label>
       <p><button onClick={() => void proposeLiteratureQuery()} style={buttonStyle}>生成候选检索式</button>{candidateQuery && <button onClick={() => void openCandidateCatalog()} style={{ ...buttonStyle, marginLeft: 8 }}>查看可下载论文</button>} {candidateQuery && <small>点击后将在“开放论文检索与选择下载”区域搜索并自动跳转。</small>}</p>
       {candidateQuery && <label>候选检索式（可编辑、复制）<textarea value={candidateQuery} onChange={(event) => setCandidateQuery(event.target.value)} rows={2} style={{ width: '100%', boxSizing: 'border-box', marginTop: 6 }} /></label>}
+      {agentRun && <details open style={{ marginTop: 10, border: '1px solid #cbd5e1', padding: 8 }}><summary>本次 Agent 执行记录</summary><p><small>运行 ID：{agentRun.run_id} · 状态：{agentRun.status} · 最大工具轮次：{agentRun.max_tool_rounds}</small></p><p><small>执行工具：{agentRun.executed_tools.length ? agentRun.executed_tools.join('、') : '无'} · 执行方式：{agentRun.model_used ? '模型工具调用' : '确定性规则回退'}</small></p><p><small>执行边界：仅生成候选检索式；不会自动下载、入库、修改权限或执行脚本。</small></p></details>}
       <p><small>使用方式：输入研究对象、疾病或现象、物种、模型等信息，生成候选检索式后检查关键词，再点击“查看可下载论文”。</small></p>
       <small>该功能只生成候选查询，不会自动下载或入库。论文下载是独立操作，只显示开放获取 PMC 全文，且需要 Research Assistant 或 PI 身份。</small>
     </section>

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -21,12 +22,14 @@ MAX_EVIDENCE_CHUNKS = 5
 
 
 class AgentRun(BaseModel):
+    run_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     answer: str
     citations: list[Citation] = Field(default_factory=list)
     candidate_query: str | None = None
     executed_tools: list[str] = Field(default_factory=list)
     model_used: bool
     status: str
+    max_tool_rounds: int = MAX_TOOL_ROUNDS
 
 
 class AgentService:
