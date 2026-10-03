@@ -8,7 +8,11 @@ import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from app.services.ingestion import download_open_access_articles
+from app.services.ingestion import (
+    download_open_access_articles,
+    download_open_access_articles_by_ids,
+    search_open_access_catalog,
+)
 from app.services.local_archive import LocalArchive
 
 
@@ -110,6 +114,26 @@ def import_open_access_literature(
         created=created,
         duplicates=duplicates,
     )
+
+
+def import_selected_open_access_literature(
+    archive: LocalArchive, *, inbox_root: Path, project_id: str, pmcids: list[str],
+    allowed_roles: tuple[str, ...] = ("student", "research-assistant", "pi"),
+) -> LiteratureImportResult:
+    """Ingest precisely the articles selected in the catalog UI (max 50)."""
+    selected = list(dict.fromkeys(pmcids))
+    if not 1 <= len(selected) <= 50:
+        raise ValueError("select between 1 and 50 papers")
+    selection_key = "\0".join(selected)
+    batch_key = hashlib.sha256(f"{project_id}\0{selection_key}".encode()).hexdigest()[:16]
+    manifest_path = download_open_access_articles_by_ids(selected, inbox_root / batch_key)
+    rows = [json.loads(line) for line in manifest_path.read_text(encoding="utf-8").splitlines() if line]
+    created = duplicates = 0
+    for row in rows:
+        result = archive.ingest(Path(row["path"]), project_id, allowed_roles, "open-access-literature")
+        if result.state == "created": created += 1
+        else: duplicates += 1
+    return LiteratureImportResult(query="selected PMC articles", requested=len(selected), downloaded=len(rows), created=created, duplicates=duplicates)
 
 
 def import_research_direction(

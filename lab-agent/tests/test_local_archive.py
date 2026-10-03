@@ -34,3 +34,19 @@ def test_local_archive_records_rejected_files(tmp_path: Path):
     else:
         raise AssertionError("executable input should be rejected")
     assert archive.list_errors()[0]["error_code"] == "ValueError"
+
+
+def test_library_listing_original_access_and_deletion(tmp_path: Path):
+    source = tmp_path / "study.html"
+    source.write_text("<title>Study</title><p>Readable evidence.</p>", encoding="utf-8")
+    archive = LocalArchive(tmp_path / "archive")
+    result = archive.ingest(source, "demo", ["research-assistant"], "literature")
+    archive.grant_role("researcher", "demo", "research-assistant")
+
+    items = archive.library_for_user("researcher", "demo")
+    assert items[0]["document_id"] == result.document_id
+    original = archive.original_for_user("researcher", "demo", result.document_id)
+    assert original and original[0].is_file()
+    assert archive.delete_document("demo", result.document_id)
+    assert archive.library_for_user("researcher", "demo") == []
+    assert not original[0].exists()

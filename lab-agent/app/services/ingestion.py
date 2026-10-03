@@ -12,10 +12,12 @@ import uuid
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from psycopg.types.json import Jsonb
+from app.services.journal_metrics import impact_factor
 
 EUROPE_PMC_SEARCH = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 EUROPE_PMC_FULL_TEXT = (
@@ -189,6 +191,80 @@ def select_open_access_results(
     return selected
 
 
+def search_open_access_catalog(
+    query: str, page: int = 1, sort_order: str = "relevance"
+) -> dict[str, Any]:
+    """Return a fixed-size browseable page of downloadable PMC metadata."""
+    cleaned = " ".join(query.split())
+    if not cleaned or page < 1:
+        raise ValueError("catalog query and positive page are required")
+    if sort_order not in {"relevance", "year_desc", "impact_factor_desc"}:
+        raise ValueError("invalid catalog sort order")
+    payload = _catalog_payload(cleaned, page)
+    papers = []
+    for item in select_open_access_results(payload["resultList"].get("result", []), 20):
+        journal = item.get("journalTitle")
+        metric = impact_factor(journal)
+        papers.append({
+            "pmcid": item["pmcid"], "title": item.get("title") or "Untitled article",
+            "journal": journal, "year": item.get("pubYear"), "authors": item.get("authorString"),
+            "abstract": item.get("abstractText"), "impact_factor": metric["value"] if metric else None,
+            "impact_factor_year": metric["year"] if metric else None,
+            "impact_factor_source": metric["source"] if metric else None,
+        })
+    if sort_order == "year_desc":
+        papers.sort(key=lambda paper: int(paper["year"] or 0), reverse=True)
+    if sort_order == "impact_factor_desc":
+        papers.sort(key=lambda paper: (paper["impact_factor"] is not None, paper["impact_factor"] or 0), reverse=True)
+    total = int(payload.get("hitCount", 0))
+    return {
+        "total": total,
+        "papers": papers,
+        "current_page": page,
+        "total_pages": math.ceil(total / 20),
+    }
+
+
+@lru_cache(maxsize=512)
+def _catalog_payload(query: str, page: int) -> dict[str, Any]:
+    """Resolve a numbered page through Europe PMC cursors and cache prior navigation."""
+    cursor_mark = "*"
+    payload: dict[str, Any] = {}
+    for current_page in range(1, page + 1):
+        params = urllib.parse.urlencode({
+            "query": f"OPEN_ACCESS:Y AND HAS_FT:Y AND SRC:PMC AND ({query})",
+            "format": "json", "resultType": "core", "pageSize": 20, "cursorMark": cursor_mark,
+        })
+        try:
+            with urllib.request.urlopen(f"{EUROPE_PMC_SEARCH}?{params}", timeout=30) as response:
+                payload = json.load(response)
+        except (OSError, urllib.error.URLError) as error:
+            raise RuntimeError("Europe PMC catalog search is temporarily unavailable") from error
+        if current_page < page:
+            next_cursor = payload.get("nextCursorMark")
+            if not next_cursor or next_cursor == cursor_mark:
+                return payload
+            cursor_mark = next_cursor
+    return payload
+
+
+def fetch_open_access_abstract(pmcid: str) -> str | None:
+    """Read the public XML abstract only; download failures leave the field unavailable."""
+    if not re.fullmatch(r"PMC\d+", pmcid):
+        raise ValueError("invalid PMC ID")
+    try:
+        request = urllib.request.Request(
+            EUROPE_PMC_FULL_TEXT.format(pmcid=pmcid),
+            headers={"User-Agent": "lab-agent-learning/0.1"},
+        )
+        with urllib.request.urlopen(request, timeout=12) as response:
+            root = ET.parse(response).getroot()
+        abstract = next((item for item in root.iter() if _local_name(item) == "abstract"), None)
+        return _text(abstract) or None
+    except (ET.ParseError, OSError, urllib.error.URLError):
+        return None
+
+
 def download_open_access_articles(
     query: str, output_dir: Path, limit: int = 20
 ) -> Path:
@@ -215,6 +291,20 @@ def download_open_access_articles(
             f"only found {len(candidates)} eligible open-access research articles"
         )
 
+    return _download_candidates(candidates[:limit], output_dir)
+
+
+def download_open_access_articles_by_ids(pmcids: Iterable[str], output_dir: Path) -> Path:
+    """Download only user-selected PMC IDs; never expand the selection silently."""
+    ids = list(dict.fromkeys(pmcids))
+    if not ids or len(ids) > 50 or any(not re.fullmatch(r"PMC\d+", item) for item in ids):
+        raise ValueError("select between 1 and 50 valid PMC IDs")
+    return _download_candidates([{"pmcid": item} for item in ids], output_dir)
+
+
+def _download_candidates(candidates: Iterable[dict[str, Any]], output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    candidates = list(candidates)
     manifest_path = output_dir / "manifest.jsonl"
     skipped_path = output_dir / "skipped.jsonl"
     accepted = 0
@@ -223,8 +313,6 @@ def download_open_access_articles(
         skipped_path.open("w", encoding="utf-8") as skipped,
     ):
         for result in candidates:
-            if accepted == limit:
-                break
             pmcid = result["pmcid"]
             source_url = EUROPE_PMC_FULL_TEXT.format(pmcid=pmcid)
             destination = output_dir / f"{pmcid}.xml"
@@ -267,9 +355,9 @@ def download_open_access_articles(
                 + "\n"
             )
             accepted += 1
-    if accepted < limit:
+    if accepted < len(candidates):
         raise RuntimeError(
-            f"downloaded {accepted} usable open-access research articles, expected {limit}; "
+            f"downloaded {accepted} usable open-access research articles, expected {len(candidates)}; "
             f"see {skipped_path}"
         )
     return manifest_path

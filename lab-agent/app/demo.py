@@ -19,13 +19,14 @@ def ensure_demo_data(root: Path) -> LocalArchive:
     archive = LocalArchive(root)
     archive.initialize()
     source = root / "demo-tissue-sop.html"
-    source.write_text(
-        "<title>Tissue Storage SOP</title><h1>Storage</h1>"
-        "<p>Store tissue on ice before fixation and record the collection time. "
-        "组织固定前应将组织置于冰上，并记录采集时间。</p>"
-        "<h1>Safety</h1><p>Review the approved protocol before handling samples.</p>",
-        encoding="utf-8",
-    )
+    if not source.exists():
+        source.write_text(
+            "<title>Tissue Storage SOP</title><h1>Storage</h1>"
+            "<p>Store tissue on ice before fixation and record the collection time. "
+            "组织固定前应将组织置于冰上，并记录采集时间。</p>"
+            "<h1>Safety</h1><p>Review the approved protocol before handling samples.</p>",
+            encoding="utf-8",
+        )
     archive.ingest(
         source,
         DEMO_PROJECT,

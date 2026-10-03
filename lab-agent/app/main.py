@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -22,10 +22,14 @@ from app.demo import DEMO_PROJECT, ensure_demo_data
 from app.services.admin_adapter import AdapterError, LocalAdminAdapter, Preview
 from app.services.agent import AgentRun, AgentService
 from app.services.knowledge import KnowledgeAnswer, KnowledgeService
+from app.services.experiment_extraction import ExperimentExtraction, ExperimentExtractionService
+from app.services.ingestion import fetch_open_access_abstract
 from app.services.literature_import import (
     LiteratureImportResult,
     import_open_access_literature,
+    import_selected_open_access_literature,
     import_research_direction,
+    search_open_access_catalog,
 )
 from app.services.local_archive import LocalArchive
 from app.services.manuscript_workflow import ManuscriptWorkflow, WorkflowError
@@ -74,10 +78,26 @@ class LiteratureImportRequest(BaseModel):
     limit: int = Field(default=100, ge=1, le=100)
 
 
+class LiteratureCatalogRequest(BaseModel):
+    query: str = Field(min_length=2, max_length=500)
+    page: int = Field(default=1, ge=1)
+    sort_order: str = Field(default="relevance", pattern="^(relevance|year_desc|impact_factor_desc)$")
+
+
+class SelectedLiteratureRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    pmcids: list[str] = Field(min_length=1, max_length=50)
+
+
 class ResearchDirectionImportRequest(BaseModel):
     project_id: str = Field(min_length=1)
     direction: str = Field(min_length=2, max_length=1_000)
     limit: int = Field(default=100, ge=50, le=100)
+
+
+class LiteratureSearchRequest(BaseModel):
+    project_id: str = Field(min_length=1)
+    query: str = Field(min_length=2, max_length=500)
 
 
 def _data_root() -> Path:
@@ -180,6 +200,54 @@ def library_summary(project_id: str, x_user_id: str | None = Header(default=None
     return _archive().project_summary(project_id)
 
 
+@app.get("/v1/library/documents")
+def library_documents(project_id: str, x_user_id: str | None = Header(default=None)) -> list[dict[str, Any]]:
+    user = current_user(x_user_id)
+    return _archive().library_for_user(user["id"], project_id)
+
+
+@app.get("/v1/library/documents/{document_id}/original")
+def download_original(document_id: str, project_id: str, x_user_id: str | None = Header(default=None)) -> FileResponse:
+    user = current_user(x_user_id)
+    original = _archive().original_for_user(user["id"], project_id, document_id)
+    if not original:
+        raise HTTPException(status_code=404, detail="authorized original was not found")
+    path, suffix = original
+    return FileResponse(path, filename=f"{document_id}{suffix}")
+
+
+@app.delete("/v1/library/documents/{document_id}")
+def delete_library_document(document_id: str, project_id: str, x_user_id: str | None = Header(default=None)) -> dict[str, str]:
+    user = current_user(x_user_id)
+    if not set(user["project_roles"].get(project_id, [])).intersection({"research-assistant", "pi"}):
+        raise HTTPException(status_code=403, detail="document deletion requires research-assistant or pi role")
+    if not _archive().authorized_document(user["id"], project_id, document_id):
+        raise HTTPException(status_code=404, detail="authorized document was not found")
+    _archive().delete_document(project_id, document_id)
+    return {"document_id": document_id, "state": "deleted"}
+
+
+@app.post("/v1/literature/search")
+def search_literature(
+    request: LiteratureSearchRequest, x_user_id: str | None = Header(default=None)
+) -> list[dict[str, Any]]:
+    user = current_user(x_user_id)
+    if request.project_id not in user["project_roles"] and "admin" not in user["roles"]:
+        raise HTTPException(status_code=403, detail="project is not visible to this user")
+    return _archive().search_documents_for_user(user["id"], request.project_id, request.query, limit=5)
+
+
+@app.get("/v1/literature/{document_id}/experiment", response_model=ExperimentExtraction)
+def extract_experiment(
+    document_id: str, project_id: str, x_user_id: str | None = Header(default=None)
+) -> ExperimentExtraction:
+    user = current_user(x_user_id)
+    try:
+        return ExperimentExtractionService(_archive()).extract(user["id"], project_id, document_id)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
 @app.post("/v1/literature/import", response_model=LiteratureImportResult)
 def import_literature(
     request: LiteratureImportRequest, x_user_id: str | None = Header(default=None)
@@ -197,6 +265,39 @@ def import_literature(
             query=request.query,
             limit=request.limit,
         )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+@app.post("/v1/literature/catalog")
+def literature_catalog(request: LiteratureCatalogRequest, x_user_id: str | None = Header(default=None)) -> dict[str, Any]:
+    current_user(x_user_id)
+    try:
+        return search_open_access_catalog(request.query, request.page, request.sort_order)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+@app.get("/v1/literature/catalog/{pmcid}/abstract")
+def literature_abstract(pmcid: str, x_user_id: str | None = Header(default=None)) -> dict[str, str | None]:
+    current_user(x_user_id)
+    try:
+        return {"abstract": fetch_open_access_abstract(pmcid)}
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/v1/literature/selected-import", response_model=LiteratureImportResult)
+def import_selected_literature(request: SelectedLiteratureRequest, x_user_id: str | None = Header(default=None)) -> LiteratureImportResult:
+    user = current_user(x_user_id)
+    if not set(user["project_roles"].get(request.project_id, [])).intersection({"research-assistant", "pi"}):
+        raise HTTPException(status_code=403, detail="literature import requires research-assistant or pi role")
+    try:
+        return import_selected_open_access_literature(_archive(), inbox_root=_data_root() / "inbox", project_id=request.project_id, pmcids=request.pmcids)
     except (RuntimeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 

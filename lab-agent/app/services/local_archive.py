@@ -232,6 +232,72 @@ class LocalArchive:
             ).fetchone()[0]
         return {"documents": document_count, "chunks": chunk_count}
 
+    def library_for_user(self, user_id: str, project_name: str) -> list[dict[str, Any]]:
+        """List document metadata only when the user's live roles allow reading it."""
+        sql = """
+            SELECT DISTINCT d.id AS document_id, d.title, d.effective_at, d.status,
+                d.source_format, d.metadata, identifiers.value AS pmcid
+            FROM documents d JOIN projects p ON p.id = d.project_id
+            JOIN document_acl acl ON acl.document_id = d.id AND acl.permission = 'read'
+            JOIN user_roles ur ON ur.project_id = p.id AND ur.role_name = acl.role_name
+            JOIN users u ON u.id = ur.user_id AND u.active = 1
+            LEFT JOIN document_identifiers identifiers
+                ON identifiers.document_id = d.id AND identifiers.kind = 'pmcid'
+            WHERE u.id = ? AND p.name = ? AND d.status = 'effective'
+            ORDER BY d.effective_at DESC, d.title
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (user_id, project_name)).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = json.loads(item["metadata"])
+            item["source"] = (
+                f"Europe PMC: https://www.ebi.ac.uk/europepmc/webservices/rest/{item['pmcid']}/fullTextXML"
+                if item["pmcid"] else "本地导入"
+            )
+            items.append(item)
+        return items
+
+    def original_for_user(self, user_id: str, project_name: str, document_id: str) -> tuple[Path, str] | None:
+        """Return an authorized original object path and its source filename extension."""
+        sql = """
+            SELECT d.object_key, d.source_format FROM documents d JOIN projects p ON p.id = d.project_id
+            JOIN document_acl acl ON acl.document_id = d.id AND acl.permission = 'read'
+            JOIN user_roles ur ON ur.project_id = p.id AND ur.role_name = acl.role_name
+            JOIN users u ON u.id = ur.user_id AND u.active = 1
+            WHERE u.id = ? AND p.name = ? AND d.id = ? AND d.status = 'effective'
+        """
+        with self._connect() as connection:
+            row = connection.execute(sql, (user_id, project_name, document_id)).fetchone()
+        if not row:
+            return None
+        path = (self.root / row["object_key"]).resolve()
+        if path.parent != self.objects.resolve() or not path.is_file():
+            return None
+        return path, row["source_format"]
+
+    def delete_document(self, project_name: str, document_id: str) -> bool:
+        """Delete one project document and its object only if no row still references it."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT d.object_key FROM documents d JOIN projects p ON p.id = d.project_id
+                   WHERE p.name = ? AND d.id = ?""", (project_name, document_id)
+            ).fetchone()
+            if not row:
+                return False
+            object_key = row["object_key"]
+            connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+            referenced = connection.execute("SELECT 1 FROM documents WHERE object_key = ?", (object_key,)).fetchone()
+            connection.execute(
+                "INSERT INTO audit_events (id, action, resource_id, payload_redacted) VALUES (?, 'document.deleted', ?, ?)",
+                (str(uuid.uuid4()), document_id, json.dumps({"object_key": object_key})),
+            )
+        path = (self.root / object_key).resolve()
+        if not referenced and path.parent == self.objects.resolve() and path.is_file():
+            path.unlink()
+        return True
+
     def grant_role(
         self,
         user_id: str,
@@ -346,6 +412,51 @@ class LocalArchive:
                     }
                 )
         return sorted(ranked, key=lambda item: item["score"], reverse=True)[:limit]
+
+    def search_documents_for_user(
+        self, user_id: str, project_name: str, query: str, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Rank authorized documents by their best matching chunk, once per document."""
+        ranked: dict[str, dict[str, Any]] = {}
+        for chunk in self.search_for_user(user_id, project_name, query, limit=200):
+            current = ranked.get(chunk["document_id"])
+            if current is None or chunk["score"] > current["score"]:
+                ranked[chunk["document_id"]] = {
+                    "document_id": chunk["document_id"],
+                    "title": chunk["title"],
+                    "score": chunk["score"],
+                    "snippet": chunk["text"][:360],
+                    "section": chunk["metadata"].get("section"),
+                }
+        return sorted(ranked.values(), key=lambda item: item["score"], reverse=True)[:limit]
+
+    def authorized_document(
+        self, user_id: str, project_name: str, document_id: str
+    ) -> dict[str, Any] | None:
+        """Resolve one document only when the caller has a current read grant."""
+        sql = """
+            SELECT DISTINCT d.id AS document_id, d.title FROM documents d
+            JOIN projects p ON p.id = d.project_id
+            JOIN document_acl acl ON acl.document_id = d.id AND acl.permission = 'read'
+            JOIN user_roles ur ON ur.project_id = p.id AND ur.role_name = acl.role_name
+            JOIN users u ON u.id = ur.user_id AND u.active = 1
+            WHERE u.id = ? AND p.name = ? AND d.id = ? AND d.status = 'effective'
+        """
+        with self._connect() as connection:
+            row = connection.execute(sql, (user_id, project_name, document_id)).fetchone()
+        return dict(row) if row else None
+
+    def document_chunks_for_user(
+        self, user_id: str, project_name: str, document_id: str
+    ) -> list[dict[str, Any]]:
+        if not self.authorized_document(user_id, project_name, document_id):
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, text, metadata FROM chunks WHERE document_id = ? ORDER BY ordinal",
+                (document_id,),
+            ).fetchall()
+        return [{**dict(row), "metadata": json.loads(row["metadata"])} for row in rows]
 
     def list_errors(self) -> list[dict[str, str]]:
         with self._connect() as connection:

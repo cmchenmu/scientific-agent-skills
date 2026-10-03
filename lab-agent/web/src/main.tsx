@@ -10,6 +10,13 @@ type Task = { id: string; state: string; request_type: string }
 type LibrarySummary = { documents: number; chunks: number }
 type LiteratureImport = { query: string; requested: number; downloaded: number; created: number; duplicates: number; direction?: string }
 type AgentRun = Answer & { candidate_query?: string; executed_tools: string[]; model_used: boolean }
+type Paper = { document_id: string; title: string; score: number; snippet: string; section?: string }
+type Evidence = { chunk_id: string; section?: string; page?: number; text: string }
+type Automation = { method: string; script_filename: string; script: string; input_template_filename: string; input_template: string; input_specification: string }
+type Experiment = { document_id: string; title: string; experimental_workflow: Evidence[]; materials_and_equipment: Evidence[]; data_analysis_methods: Evidence[]; expected_results: Evidence[]; conclusions: Evidence[]; automations: Automation[]; review_note: string }
+type CatalogPaper = { pmcid: string; title: string; journal?: string; year?: string; authors?: string; abstract?: string; impact_factor?: number; impact_factor_year?: string; impact_factor_source?: string }
+type CatalogPage = { total: number; papers: CatalogPaper[]; current_page: number; total_pages: number }
+type LibraryDocument = { document_id: string; title: string; effective_at: string; status: string; source_format: string; source: string }
 
 function request(path: string, user: string, options: RequestInit = {}) {
   return fetch(`${api}${path}`, {
@@ -29,10 +36,23 @@ function App() {
   const [actionId, setActionId] = useState<string | null>(null)
   const [idempotencyKey, setIdempotencyKey] = useState(() => crypto.randomUUID())
   const [researchDirection, setResearchDirection] = useState('小鼠海马神经发生与阿尔茨海默病')
-  const [literatureCount, setLiteratureCount] = useState('100')
   const [library, setLibrary] = useState<LibrarySummary | null>(null)
   const [importing, setImporting] = useState(false)
   const [candidateQuery, setCandidateQuery] = useState<string | null>(null)
+  const [paperQuery, setPaperQuery] = useState('mouse hippocampus')
+  const [papers, setPapers] = useState<Paper[]>([])
+  const [experiment, setExperiment] = useState<Experiment | null>(null)
+  const [catalogQuery, setCatalogQuery] = useState('mouse hippocampus')
+  const [catalog, setCatalog] = useState<CatalogPaper[]>([])
+  const [catalogTotal, setCatalogTotal] = useState(0)
+  const [catalogCurrentPage, setCatalogCurrentPage] = useState(1)
+  const [catalogTotalPages, setCatalogTotalPages] = useState(0)
+  const [catalogPageInput, setCatalogPageInput] = useState('1')
+  const [catalogAbstracts, setCatalogAbstracts] = useState<Record<string, string | null>>({})
+  const [expandedAbstracts, setExpandedAbstracts] = useState<string[]>([])
+  const [catalogSort, setCatalogSort] = useState('relevance')
+  const [selectedPmcids, setSelectedPmcids] = useState<string[]>([])
+  const [libraryDocuments, setLibraryDocuments] = useState<LibraryDocument[]>([])
 
   const loadTasks = async () => {
     const response = await request('/v1/tasks', user)
@@ -44,7 +64,12 @@ function App() {
     if (response.ok) setLibrary(await response.json() as LibrarySummary)
   }
 
-  useEffect(() => { void loadTasks(); void loadLibrary() }, [user])
+  const loadLibraryDocuments = async () => {
+    const response = await request(`/v1/library/documents?project_id=${encodeURIComponent(project)}`, user)
+    if (response.ok) setLibraryDocuments(await response.json() as LibraryDocument[])
+  }
+
+  useEffect(() => { void loadTasks(); void loadLibrary(); void loadLibraryDocuments() }, [user])
 
   const ask = async () => {
     setMessage('正在检索已授权知识库...')
@@ -88,19 +113,6 @@ function App() {
     await loadTasks()
   }
 
-  const importResearchDirection = async () => {
-    setImporting(true)
-    setMessage('正在从 Europe PMC 下载开放获取全文并建立本地索引；100 篇可能需要数分钟。')
-    const response = await request('/v1/literature/import', user, {
-      method: 'POST', body: JSON.stringify({ project_id: project, query: candidateQuery, limit: Number(literatureCount) }),
-    })
-    setImporting(false)
-    if (!response.ok) { setMessage(await response.text()); return }
-    const result = await response.json() as LiteratureImport
-    setMessage(`文献入库完成：检索 ${result.query}；下载 ${result.downloaded} 篇，新增 ${result.created} 篇，重复 ${result.duplicates} 篇。`)
-    await loadLibrary()
-  }
-
   const proposeLiteratureQuery = async () => {
     setMessage('正在在受限工具集合内生成候选检索式...')
     const response = await request('/v1/agent/run', user, {
@@ -110,6 +122,106 @@ function App() {
     const result = await response.json() as AgentRun
     setCandidateQuery(result.candidate_query ?? null)
     setMessage(result.candidate_query ? `候选检索式：${result.candidate_query}。请确认后再导入。` : result.answer)
+  }
+
+  const searchPapers = async () => {
+    setMessage('正在检索项目中已授权的论文...')
+    const response = await request('/v1/literature/search', user, {
+      method: 'POST', body: JSON.stringify({ project_id: project, query: paperQuery }),
+    })
+    if (!response.ok) { setMessage(await response.text()); return }
+    setPapers(await response.json() as Paper[])
+    setExperiment(null)
+    setMessage('')
+  }
+
+  const selectPaper = async (paper: Paper) => {
+    setMessage('正在从已授权全文抽取实验信息和可复用分析模板...')
+    const response = await request(`/v1/literature/${paper.document_id}/experiment?project_id=${encodeURIComponent(project)}`, user)
+    if (!response.ok) { setMessage(await response.text()); return }
+    setExperiment(await response.json() as Experiment)
+    setMessage('')
+  }
+
+  const download = (filename: string, content: string) => {
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' }))
+    link.download = filename
+    link.click()
+    URL.revokeObjectURL(link.href)
+  }
+
+  const searchCatalog = async (query = catalogQuery, page = 1, sortOrder = catalogSort) => {
+    setMessage('正在搜索 Europe PMC 中可下载的开放全文...')
+    const response = await request('/v1/literature/catalog', user, { method: 'POST', body: JSON.stringify({ query, page, sort_order: sortOrder }) })
+    if (!response.ok) { setMessage(await response.text()); return }
+    const result = await response.json() as CatalogPage
+    const orderedPage = orderCatalog(result.papers, sortOrder)
+    setCatalog(orderedPage)
+    setCatalogTotal(result.total)
+    setCatalogCurrentPage(result.current_page)
+    setCatalogTotalPages(result.total_pages)
+    setCatalogPageInput(String(result.current_page))
+    setSelectedPmcids([])
+    setExpandedAbstracts([])
+    setMessage(result.papers.length ? `搜索命中 ${result.total} 篇，当前第 ${result.current_page} / ${result.total_pages} 页。` : '没有找到可下载的开放全文。')
+  }
+
+  const togglePmcid = (pmcid: string) => setSelectedPmcids((current) => {
+    if (current.includes(pmcid)) return current.filter((item) => item !== pmcid)
+    if (current.length >= 50) { setMessage('一次最多选择并下载 50 篇论文。'); return current }
+    return [...current, pmcid]
+  })
+
+  const toggleAbstract = async (paper: CatalogPaper) => {
+    if (expandedAbstracts.includes(paper.pmcid)) {
+      setExpandedAbstracts((current) => current.filter((pmcid) => pmcid !== paper.pmcid))
+      return
+    }
+    setExpandedAbstracts((current) => [...current, paper.pmcid])
+    if (paper.abstract || paper.pmcid in catalogAbstracts) return
+    const response = await request(`/v1/literature/catalog/${paper.pmcid}/abstract`, user)
+    if (!response.ok) { setCatalogAbstracts((current) => ({ ...current, [paper.pmcid]: null })); return }
+    const payload = await response.json() as { abstract: string | null }
+    setCatalogAbstracts((current) => ({ ...current, [paper.pmcid]: payload.abstract }))
+  }
+
+  const goToCatalogPage = () => {
+    const target = Number(catalogPageInput)
+    if (Number.isInteger(target) && target >= 1 && target <= catalogTotalPages) void searchCatalog(catalogQuery, target)
+    else setMessage(`请输入 1 到 ${catalogTotalPages} 之间的页码。`)
+  }
+
+  const downloadSelectedPapers = async (pmcids: string[]) => {
+    if (!pmcids.length) return
+    setImporting(true)
+    setMessage(`正在下载并入库 ${pmcids.length} 篇已选择论文...`)
+    const response = await request('/v1/literature/selected-import', user, { method: 'POST', body: JSON.stringify({ project_id: project, pmcids }) })
+    setImporting(false)
+    if (!response.ok) { setMessage(await response.text()); return }
+    const result = await response.json() as LiteratureImport
+    setMessage(`下载完成：${result.downloaded} 篇，新增 ${result.created} 篇，重复 ${result.duplicates} 篇。`)
+    await loadLibrary()
+    await loadLibraryDocuments()
+  }
+
+  const downloadOriginal = async (paper: LibraryDocument) => {
+    const response = await request(`/v1/library/documents/${paper.document_id}/original?project_id=${encodeURIComponent(project)}`, user)
+    if (!response.ok) { setMessage(await response.text()); return }
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(await response.blob())
+    link.download = `${paper.title}.${paper.source_format.replace('.', '')}`
+    link.click()
+    URL.revokeObjectURL(link.href)
+  }
+
+  const removeDocument = async (paper: LibraryDocument) => {
+    if (!window.confirm(`删除《${paper.title}》及其本地原文副本？`)) return
+    const response = await request(`/v1/library/documents/${paper.document_id}?project_id=${encodeURIComponent(project)}`, user, { method: 'DELETE' })
+    if (!response.ok) { setMessage(await response.text()); return }
+    setMessage(`已删除：${paper.title}`)
+    await loadLibrary()
+    await loadLibraryDocuments()
   }
 
   return <main style={{ maxWidth: 980, margin: '32px auto', fontFamily: 'system-ui, sans-serif', color: '#172033', padding: '0 20px' }}>
@@ -130,13 +242,46 @@ function App() {
       {answer && <div style={resultStyle}><strong>{answer.status}</strong><p>{answer.answer}</p>{answer.citations.map((citation) => <p key={citation.chunk_id}><small>引用：{citation.title} · {citation.section ?? `第 ${citation.page} 页`} · {citation.document_id}</small></p>)}</div>}
     </section>
     <section style={sectionStyle}>
+      <h2>搜索并选择下载论文</h2>
+      <label>搜索关键词 <input value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} style={{ minWidth: 280 }} /></label>
+      <label style={{ marginLeft: 12 }}>排序 <select value={catalogSort} onChange={(event) => { setCatalogSort(event.target.value); void searchCatalog(catalogQuery, 1, event.target.value) }}><option value="relevance">相关性</option><option value="year_desc">发表年份（新到旧）</option><option value="impact_factor_desc">影响因子（高到低）</option></select></label>
+      <button onClick={() => void searchCatalog()} style={{ ...buttonStyle, marginLeft: 8 }}>搜索可下载论文</button>
+      {catalog.length > 0 && <div style={{ marginTop: 12 }}>
+        <p>搜索命中 {catalogTotal} 篇；当前第 {catalogCurrentPage} / {catalogTotalPages} 页；已选择 {selectedPmcids.length} / 50 篇。<button onClick={() => void downloadSelectedPapers(catalog.map((paper) => paper.pmcid))} disabled={importing || !catalog.length} style={{ ...buttonStyle, marginLeft: 8 }}>{importing ? '正在下载...' : '下载当前页全部（最多20篇）'}</button>{selectedPmcids.length > 0 && <button onClick={() => void downloadSelectedPapers(selectedPmcids)} disabled={importing} style={{ ...buttonStyle, marginLeft: 8 }}>下载已选择论文</button>}</p>
+        <div style={{ maxHeight: 420, overflowY: 'auto', border: '1px solid #d9e0e8', padding: '0 10px' }}>{catalog.map((paper) => <div key={paper.pmcid} style={{ borderTop: '1px solid #d9e0e8', padding: '10px 0' }}><label><input type="checkbox" checked={selectedPmcids.includes(paper.pmcid)} onChange={() => togglePmcid(paper.pmcid)} /> <strong>{paper.title}</strong></label><br /><small>{paper.pmcid} · {[paper.authors, paper.journal, paper.year].filter(Boolean).join(' · ')} · 影响因子：{paper.impact_factor !== undefined && paper.impact_factor !== null ? `${paper.impact_factor}（${paper.impact_factor_year}）` : '未导入 JIF'}</small><p style={{ margin: '6px 0' }}><button onClick={() => void toggleAbstract(paper)} style={{ ...buttonStyle, marginTop: 0 }}>{expandedAbstracts.includes(paper.pmcid) ? '收起摘要' : '显示摘要'}</button></p>{expandedAbstracts.includes(paper.pmcid) && <p style={{ margin: '6px 0' }}><small>摘要：{paper.abstract ?? (paper.pmcid in catalogAbstracts ? catalogAbstracts[paper.pmcid] ?? '来源未提供摘要。' : '正在加载摘要...')}</small></p>}<button onClick={() => void downloadSelectedPapers([paper.pmcid])} disabled={importing} style={{ ...buttonStyle, marginLeft: 8 }}>下载此篇</button></div>)}</div>
+        <p><button onClick={() => void searchCatalog(catalogQuery, 1)} disabled={catalogCurrentPage <= 1} style={buttonStyle}>首页</button><button onClick={() => void searchCatalog(catalogQuery, catalogCurrentPage - 1)} disabled={catalogCurrentPage <= 1} style={{ ...buttonStyle, marginLeft: 8 }}>上一页</button>{pageWindow(catalogCurrentPage, catalogTotalPages)[0] > 1 && <span style={{ marginLeft: 8 }}>...</span>}{pageWindow(catalogCurrentPage, catalogTotalPages).map((page) => <button key={page} onClick={() => void searchCatalog(catalogQuery, page)} disabled={page === catalogCurrentPage} style={{ ...buttonStyle, marginLeft: 8, background: page === catalogCurrentPage ? '#475569' : '#0f766e' }}>{page}</button>)}{pageWindow(catalogCurrentPage, catalogTotalPages).at(-1)! < catalogTotalPages && <span style={{ marginLeft: 8 }}>...</span>}<button onClick={() => void searchCatalog(catalogQuery, catalogCurrentPage + 1)} disabled={catalogCurrentPage >= catalogTotalPages} style={{ ...buttonStyle, marginLeft: 8 }}>下一页</button><button onClick={() => void searchCatalog(catalogQuery, catalogTotalPages)} disabled={catalogCurrentPage >= catalogTotalPages} style={{ ...buttonStyle, marginLeft: 8 }}>末页</button></p>
+        <label>跳转到第 <input value={catalogPageInput} onChange={(event) => setCatalogPageInput(event.target.value)} inputMode="numeric" style={{ width: 70, margin: '0 6px' }} /> 页</label><button onClick={goToCatalogPage} style={{ ...buttonStyle, marginLeft: 8 }}>跳转</button>
+      </div>}
+    </section>
+    <section style={sectionStyle}>
+      <h2>我的论文库</h2>
+      <p>{libraryDocuments.length ? `已授权 ${libraryDocuments.length} 篇论文。` : '暂无可访问的已下载论文。'}</p>
+      {libraryDocuments.length > 0 && <div style={{ maxHeight: 420, overflowY: 'auto', border: '1px solid #d9e0e8', padding: '0 10px' }}>{libraryDocuments.map((paper) => <div key={paper.document_id} style={{ borderTop: '1px solid #d9e0e8', padding: '10px 0' }}><strong>{paper.title}</strong><br /><small>来源：{paper.source} · 入库：{paper.effective_at} · 状态：{paper.status} · 格式：{paper.source_format}</small><br /><button onClick={() => void downloadOriginal(paper)} style={buttonStyle}>下载原文</button>{user !== 'student-demo' && <button onClick={() => void removeDocument(paper)} style={{ ...buttonStyle, marginLeft: 8, background: '#b42318' }}>删除</button>}</div>)}</div>}
+    </section>
+    <section style={sectionStyle}>
+      <h2>论文实验提取</h2>
+      <label>关键词 <input value={paperQuery} onChange={(event) => setPaperQuery(event.target.value)} style={{ minWidth: 280 }} /></label>
+      <button onClick={() => void searchPapers()} style={{ ...buttonStyle, marginLeft: 8 }}>检索前五篇论文</button>
+      {papers.length > 0 && <div style={{ marginTop: 12 }}>{papers.map((paper) => <button key={paper.document_id} onClick={() => void selectPaper(paper)} style={{ display: 'block', width: '100%', textAlign: 'left', marginBottom: 7, padding: 10, border: '1px solid #cbd5e1', background: '#fff', borderRadius: 4, cursor: 'pointer' }}><strong>{paper.title}</strong><br /><small>{paper.section ?? '正文'} · {paper.snippet}</small></button>)}</div>}
+      {experiment && <div style={resultStyle}>
+        <h3 style={{ marginTop: 0 }}>{experiment.title}</h3>
+        <EvidenceGroup title="实验流程" items={experiment.experimental_workflow} />
+        <EvidenceGroup title="材料与设备" items={experiment.materials_and_equipment} />
+        <EvidenceGroup title="数据分析方法" items={experiment.data_analysis_methods} />
+        <EvidenceGroup title="预期结果" items={experiment.expected_results} />
+        <EvidenceGroup title="结论" items={experiment.conclusions} />
+        <h3>自动化分析材料</h3>
+        {experiment.automations.length ? experiment.automations.map((item) => <div key={item.script_filename} style={{ borderTop: '1px solid #cbd5e1', paddingTop: 10 }}><strong>{item.method}</strong><p><small>{item.input_specification}</small></p><button onClick={() => download(item.script_filename, item.script)} style={buttonStyle}>下载分析脚本</button><button onClick={() => download(item.input_template_filename, item.input_template)} style={{ ...buttonStyle, marginLeft: 8 }}>下载 CSV 模板</button></div>) : <p>未识别到受支持的分析方法，需研究人员根据原文选择方法和输入格式。</p>}
+        <p><small>{experiment.review_note}</small></p>
+      </div>}
+    </section>
+    <section style={sectionStyle}>
       <h2>研究方向助手</h2>
       <p>{library ? `当前项目：${library.documents} 篇文档，${library.chunks} 个可检索片段。` : '正在读取知识库统计...'}</p>
       <label>科研方向 <textarea value={researchDirection} onChange={(event) => setResearchDirection(event.target.value)} rows={3} style={{ width: '100%', boxSizing: 'border-box' }} /></label>
-      <label>论文数量 <select value={literatureCount} onChange={(event) => setLiteratureCount(event.target.value)}><option value="50">50 篇</option><option value="100">100 篇</option></select></label>
-      <p><button onClick={() => void proposeLiteratureQuery()} style={buttonStyle}>生成候选检索式</button>{candidateQuery && <button onClick={() => void importResearchDirection()} disabled={importing} style={{ ...buttonStyle, marginLeft: 8 }}>{importing ? '正在检索并入库...' : '确认并导入开放全文'}</button>}</p>
+      <p><button onClick={() => void proposeLiteratureQuery()} style={buttonStyle}>生成候选检索式</button>{candidateQuery && <button onClick={() => { setCatalogQuery(candidateQuery); void searchCatalog(candidateQuery) }} style={{ ...buttonStyle, marginLeft: 8 }}>查看可下载论文</button>}</p>
       {candidateQuery && <p><code>{candidateQuery}</code></p>}
-      <small>模型只能生成候选查询；确认导入是独立操作，只导入开放获取 PMC 全文，且需要 Research Assistant 或 PI 身份。</small>
+      <small>模型只能生成候选查询。选择下载是独立操作，只显示开放获取 PMC 全文，且需要 Research Assistant 或 PI 身份。</small>
     </section>
     <section style={sectionStyle}>
       <h2>模拟报销</h2>
@@ -148,6 +293,22 @@ function App() {
     <section style={sectionStyle}><h2>我的任务</h2>{tasks.length ? <ul>{tasks.map((task) => <li key={task.id}>{task.request_type} · {task.state} · {task.id}</li>)}</ul> : <p>暂无任务。</p>}</section>
     {message && <p style={{ background: '#fff3cd', padding: 12 }}>{message}</p>}
   </main>
+}
+
+function EvidenceGroup({ title, items }: { title: string; items: Evidence[] }) {
+  return <div><h3>{title}</h3>{items.length ? <ul>{items.map((item) => <li key={item.chunk_id}><small>{item.section ?? (item.page ? `第 ${item.page} 页` : '正文')}：</small>{item.text}</li>)}</ul> : <p>未在可读取正文中定位到对应证据。</p>}</div>
+}
+
+function orderCatalog(papers: CatalogPaper[], sortOrder: string) {
+  if (sortOrder === 'year_desc') return [...papers].sort((left, right) => Number(right.year ?? 0) - Number(left.year ?? 0))
+  if (sortOrder === 'impact_factor_desc') return [...papers].sort((left, right) => (right.impact_factor ?? -1) - (left.impact_factor ?? -1))
+  return papers
+}
+
+function pageWindow(currentPage: number, totalPages: number) {
+  const first = Math.max(1, Math.min(currentPage - 2, totalPages - 4))
+  const last = Math.min(totalPages, first + 4)
+  return Array.from({ length: Math.max(0, last - first + 1) }, (_, index) => first + index)
 }
 
 const sectionStyle = { borderBottom: '1px solid #d9e0e8', padding: '20px 0' }

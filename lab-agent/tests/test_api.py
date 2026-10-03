@@ -145,3 +145,32 @@ def test_library_summary_and_import_access_control(monkeypatch, tmp_path):
     )
     assert direction.status_code == 200
     assert direction.json()["query"] == "Alzheimer hippocampus mouse"
+
+
+def test_catalog_and_selected_import_are_bounded_and_role_protected(monkeypatch, tmp_path):
+    monkeypatch.setenv("LAB_AGENT_DATA_PATH", str(tmp_path / "data"))
+    client = TestClient(app)
+    monkeypatch.setattr("app.main.search_open_access_catalog", lambda query, cursor, sort: {"total": 101, "papers": [{"pmcid": "PMC1", "title": "Paper", "journal": None, "year": "2026", "authors": None, "abstract": "Abstract"}], "next_cursor_mark": "next"})
+    catalog = client.post("/v1/literature/catalog", headers=headers("student-demo"), json={"query": "mouse brain"})
+    assert catalog.status_code == 200
+    assert catalog.json()["total"] == 101
+    assert catalog.json()["papers"][0]["abstract"] == "Abstract"
+    denied = client.post("/v1/literature/selected-import", headers=headers("student-demo"), json={"project_id": "mouse-neuro-demo", "pmcids": ["PMC1"]})
+    assert denied.status_code == 403
+    selected = client.post("/v1/literature/selected-import", headers=headers("research-demo"), json={"project_id": "mouse-neuro-demo", "pmcids": [f"PMC{number}" for number in range(51)]})
+    assert selected.status_code == 422
+
+
+def test_library_documents_download_and_delete_access(monkeypatch, tmp_path):
+    monkeypatch.setenv("LAB_AGENT_DATA_PATH", str(tmp_path / "data"))
+    client = TestClient(app)
+    documents = client.get("/v1/library/documents?project_id=mouse-neuro-demo", headers=headers("student-demo"))
+    assert documents.status_code == 200
+    document_id = documents.json()[0]["document_id"]
+    original = client.get(f"/v1/library/documents/{document_id}/original?project_id=mouse-neuro-demo", headers=headers("student-demo"))
+    assert original.status_code == 200
+    assert original.content
+    denied = client.delete(f"/v1/library/documents/{document_id}?project_id=mouse-neuro-demo", headers=headers("student-demo"))
+    assert denied.status_code == 403
+    deleted = client.delete(f"/v1/library/documents/{document_id}?project_id=mouse-neuro-demo", headers=headers("research-demo"))
+    assert deleted.status_code == 200
