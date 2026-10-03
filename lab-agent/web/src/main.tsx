@@ -15,7 +15,8 @@ type Evidence = { chunk_id: string; section?: string; page?: number; text: strin
 type Automation = { method: string; script_filename: string; script: string; input_template_filename: string; input_template: string; input_specification: string }
 type Experiment = { document_id: string; title: string; experimental_workflow: Evidence[]; materials_and_equipment: Evidence[]; data_analysis_methods: Evidence[]; expected_results: Evidence[]; conclusions: Evidence[]; automations: Automation[]; review_note: string }
 type CatalogPaper = { pmcid: string; title: string; journal?: string; year?: string; authors?: string; abstract?: string; impact_factor?: number; impact_factor_year?: string; impact_factor_source?: string }
-type CatalogPage = { total: number; papers: CatalogPaper[]; current_page: number; total_pages: number }
+type CatalogPage = { total: number; papers: CatalogPaper[]; current_page: number; total_pages: number; display_mode?: string; page_displayed?: number }
+type CatalogInspection = { pmcid: string; methods: { section: string; text: string }[]; technical_route: string[]; data_tables: { caption: string; data: string }[]; data_summary: string; figures: { caption: string; image_url?: string; source_url: string }[]; extraction_status: string; note: string }
 type LibraryDocument = { document_id: string; title: string; effective_at: string; status: string; source_format: string; source: string }
 
 function request(path: string, user: string, options: RequestInit = {}) {
@@ -50,7 +51,11 @@ function App() {
   const [catalogPageInput, setCatalogPageInput] = useState('1')
   const [catalogAbstracts, setCatalogAbstracts] = useState<Record<string, string | null>>({})
   const [expandedAbstracts, setExpandedAbstracts] = useState<string[]>([])
+  const [inspections, setInspections] = useState<Record<string, CatalogInspection>>({})
+  const [inspectionErrors, setInspectionErrors] = useState<Record<string, string>>({})
+  const [expandedInspections, setExpandedInspections] = useState<string[]>([])
   const [catalogSort, setCatalogSort] = useState('relevance')
+  const [catalogDisplayMode, setCatalogDisplayMode] = useState('all')
   const [selectedPmcids, setSelectedPmcids] = useState<string[]>([])
   const [libraryDocuments, setLibraryDocuments] = useState<LibraryDocument[]>([])
 
@@ -151,9 +156,9 @@ function App() {
     URL.revokeObjectURL(link.href)
   }
 
-  const searchCatalog = async (query = catalogQuery, page = 1, sortOrder = catalogSort) => {
+  const searchCatalog = async (query = catalogQuery, page = 1, sortOrder = catalogSort, displayMode = catalogDisplayMode) => {
     setMessage('正在搜索 Europe PMC 中可下载的开放全文...')
-    const response = await request('/v1/literature/catalog', user, { method: 'POST', body: JSON.stringify({ query, page, sort_order: sortOrder }) })
+    const response = await request('/v1/literature/catalog', user, { method: 'POST', body: JSON.stringify({ query, page, sort_order: sortOrder, display_mode: displayMode }) })
     if (!response.ok) { setMessage(await response.text()); return }
     const result = await response.json() as CatalogPage
     const orderedPage = orderCatalog(result.papers, sortOrder)
@@ -164,7 +169,9 @@ function App() {
     setCatalogPageInput(String(result.current_page))
     setSelectedPmcids([])
     setExpandedAbstracts([])
-    setMessage(result.papers.length ? `搜索命中 ${result.total} 篇，当前第 ${result.current_page} / ${result.total_pages} 页。` : '没有找到可下载的开放全文。')
+    setExpandedInspections([])
+    setInspectionErrors({})
+    setMessage(result.papers.length ? `搜索命中 ${result.total} 篇，当前第 ${result.current_page} / ${result.total_pages} 页。` : displayMode === 'with_data_or_images' ? '当前页没有可展示数据表或图片的论文，可切换为“显示全部论文”。' : '没有找到可下载的开放全文。')
   }
 
   const togglePmcid = (pmcid: string) => setSelectedPmcids((current) => {
@@ -184,6 +191,27 @@ function App() {
     if (!response.ok) { setCatalogAbstracts((current) => ({ ...current, [paper.pmcid]: null })); return }
     const payload = await response.json() as { abstract: string | null }
     setCatalogAbstracts((current) => ({ ...current, [paper.pmcid]: payload.abstract }))
+  }
+
+  const toggleInspection = async (paper: CatalogPaper) => {
+    if (expandedInspections.includes(paper.pmcid)) {
+      setExpandedInspections((current) => current.filter((pmcid) => pmcid !== paper.pmcid))
+      setInspectionErrors((current) => {
+        const { [paper.pmcid]: _ignored, ...remaining } = current
+        return remaining
+      })
+      return
+    }
+    setExpandedInspections((current) => [...current, paper.pmcid])
+    if (inspections[paper.pmcid]) return
+    const response = await request(`/v1/literature/catalog/${paper.pmcid}/inspection`, user)
+    if (!response.ok) {
+      const detail = await response.text()
+      setInspectionErrors((current) => ({ ...current, [paper.pmcid]: `暂时无法读取：${detail}` }))
+      return
+    }
+    const payload = await response.json() as CatalogInspection
+    setInspections((current) => ({ ...current, [paper.pmcid]: payload }))
   }
 
   const goToCatalogPage = () => {
@@ -245,10 +273,11 @@ function App() {
       <h2>搜索并选择下载论文</h2>
       <label>搜索关键词 <input value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} style={{ minWidth: 280 }} /></label>
       <label style={{ marginLeft: 12 }}>排序 <select value={catalogSort} onChange={(event) => { setCatalogSort(event.target.value); void searchCatalog(catalogQuery, 1, event.target.value) }}><option value="relevance">相关性</option><option value="year_desc">发表年份（新到旧）</option><option value="impact_factor_desc">影响因子（高到低）</option></select></label>
+      <label style={{ marginLeft: 12 }}>展示 <select value={catalogDisplayMode} onChange={(event) => { const mode = event.target.value; setCatalogDisplayMode(mode); void searchCatalog(catalogQuery, 1, catalogSort, mode) }}><option value="all">显示全部论文</option><option value="with_data_or_images">仅显示可展示数据或图片的论文</option></select></label>
       <button onClick={() => void searchCatalog()} style={{ ...buttonStyle, marginLeft: 8 }}>搜索可下载论文</button>
       {catalog.length > 0 && <div style={{ marginTop: 12 }}>
-        <p>搜索命中 {catalogTotal} 篇；当前第 {catalogCurrentPage} / {catalogTotalPages} 页；已选择 {selectedPmcids.length} / 50 篇。<button onClick={() => void downloadSelectedPapers(catalog.map((paper) => paper.pmcid))} disabled={importing || !catalog.length} style={{ ...buttonStyle, marginLeft: 8 }}>{importing ? '正在下载...' : '下载当前页全部（最多20篇）'}</button>{selectedPmcids.length > 0 && <button onClick={() => void downloadSelectedPapers(selectedPmcids)} disabled={importing} style={{ ...buttonStyle, marginLeft: 8 }}>下载已选择论文</button>}</p>
-        <div style={{ maxHeight: 420, overflowY: 'auto', border: '1px solid #d9e0e8', padding: '0 10px' }}>{catalog.map((paper) => <div key={paper.pmcid} style={{ borderTop: '1px solid #d9e0e8', padding: '10px 0' }}><label><input type="checkbox" checked={selectedPmcids.includes(paper.pmcid)} onChange={() => togglePmcid(paper.pmcid)} /> <strong>{paper.title}</strong></label><br /><small>{paper.pmcid} · {[paper.authors, paper.journal, paper.year].filter(Boolean).join(' · ')} · 影响因子：{paper.impact_factor !== undefined && paper.impact_factor !== null ? `${paper.impact_factor}（${paper.impact_factor_year}）` : '未导入 JIF'}</small><p style={{ margin: '6px 0' }}><button onClick={() => void toggleAbstract(paper)} style={{ ...buttonStyle, marginTop: 0 }}>{expandedAbstracts.includes(paper.pmcid) ? '收起摘要' : '显示摘要'}</button></p>{expandedAbstracts.includes(paper.pmcid) && <p style={{ margin: '6px 0' }}><small>摘要：{paper.abstract ?? (paper.pmcid in catalogAbstracts ? catalogAbstracts[paper.pmcid] ?? '来源未提供摘要。' : '正在加载摘要...')}</small></p>}<button onClick={() => void downloadSelectedPapers([paper.pmcid])} disabled={importing} style={{ ...buttonStyle, marginLeft: 8 }}>下载此篇</button></div>)}</div>
+        <p>搜索命中 {catalogTotal} 篇；当前第 {catalogCurrentPage} / {catalogTotalPages} 页；{catalogDisplayMode === 'with_data_or_images' && `当前页符合数据/图片条件 ${catalog.length} 篇；`}已选择 {selectedPmcids.length} / 50 篇。<button onClick={() => void downloadSelectedPapers(catalog.map((paper) => paper.pmcid))} disabled={importing || !catalog.length} style={{ ...buttonStyle, marginLeft: 8 }}>{importing ? '正在下载...' : '下载当前页全部（最多20篇）'}</button>{selectedPmcids.length > 0 && <button onClick={() => void downloadSelectedPapers(selectedPmcids)} disabled={importing} style={{ ...buttonStyle, marginLeft: 8 }}>下载已选择论文</button>}</p>
+        <div style={{ maxHeight: 420, overflowY: 'auto', border: '1px solid #d9e0e8', padding: '0 10px' }}>{catalog.map((paper) => <div key={paper.pmcid} style={{ borderTop: '1px solid #d9e0e8', padding: '10px 0' }}><label><input type="checkbox" checked={selectedPmcids.includes(paper.pmcid)} onChange={() => togglePmcid(paper.pmcid)} /> <strong>{paper.title}</strong></label><br /><small>{paper.pmcid} · {[paper.authors, paper.journal, paper.year].filter(Boolean).join(' · ')} · 影响因子：{paper.impact_factor !== undefined && paper.impact_factor !== null ? `${paper.impact_factor}（${paper.impact_factor_year}）` : '未导入 JIF'}</small><p style={{ margin: '6px 0' }}><button onClick={() => void toggleAbstract(paper)} style={{ ...buttonStyle, marginTop: 0 }}>{expandedAbstracts.includes(paper.pmcid) ? '收起摘要' : '显示摘要'}</button><button onClick={() => void toggleInspection(paper)} style={{ ...buttonStyle, marginTop: 0, marginLeft: 8 }}>{expandedInspections.includes(paper.pmcid) ? '收起研究方法与数据' : '查看研究方法与数据'}</button></p>{expandedAbstracts.includes(paper.pmcid) && <p style={{ margin: '6px 0' }}><small>摘要：{paper.abstract ?? (paper.pmcid in catalogAbstracts ? catalogAbstracts[paper.pmcid] ?? '来源未提供摘要。' : '正在加载摘要...')}</small></p>}{expandedInspections.includes(paper.pmcid) && <InspectionView inspection={inspections[paper.pmcid]} error={inspectionErrors[paper.pmcid]} />}<button onClick={() => void downloadSelectedPapers([paper.pmcid])} disabled={importing} style={{ ...buttonStyle, marginLeft: 8 }}>下载此篇</button></div>)}</div>
         <p><button onClick={() => void searchCatalog(catalogQuery, 1)} disabled={catalogCurrentPage <= 1} style={buttonStyle}>首页</button><button onClick={() => void searchCatalog(catalogQuery, catalogCurrentPage - 1)} disabled={catalogCurrentPage <= 1} style={{ ...buttonStyle, marginLeft: 8 }}>上一页</button>{pageWindow(catalogCurrentPage, catalogTotalPages)[0] > 1 && <span style={{ marginLeft: 8 }}>...</span>}{pageWindow(catalogCurrentPage, catalogTotalPages).map((page) => <button key={page} onClick={() => void searchCatalog(catalogQuery, page)} disabled={page === catalogCurrentPage} style={{ ...buttonStyle, marginLeft: 8, background: page === catalogCurrentPage ? '#475569' : '#0f766e' }}>{page}</button>)}{pageWindow(catalogCurrentPage, catalogTotalPages).at(-1)! < catalogTotalPages && <span style={{ marginLeft: 8 }}>...</span>}<button onClick={() => void searchCatalog(catalogQuery, catalogCurrentPage + 1)} disabled={catalogCurrentPage >= catalogTotalPages} style={{ ...buttonStyle, marginLeft: 8 }}>下一页</button><button onClick={() => void searchCatalog(catalogQuery, catalogTotalPages)} disabled={catalogCurrentPage >= catalogTotalPages} style={{ ...buttonStyle, marginLeft: 8 }}>末页</button></p>
         <label>跳转到第 <input value={catalogPageInput} onChange={(event) => setCatalogPageInput(event.target.value)} inputMode="numeric" style={{ width: 70, margin: '0 6px' }} /> 页</label><button onClick={goToCatalogPage} style={{ ...buttonStyle, marginLeft: 8 }}>跳转</button>
       </div>}
@@ -297,6 +326,19 @@ function App() {
 
 function EvidenceGroup({ title, items }: { title: string; items: Evidence[] }) {
   return <div><h3>{title}</h3>{items.length ? <ul>{items.map((item) => <li key={item.chunk_id}><small>{item.section ?? (item.page ? `第 ${item.page} 页` : '正文')}：</small>{item.text}</li>)}</ul> : <p>未在可读取正文中定位到对应证据。</p>}</div>
+}
+
+function InspectionView({ inspection, error }: { inspection?: CatalogInspection; error?: string }) {
+  if (error) return <p><small>{error}</small></p>
+  if (!inspection) return <p><small>正在读取开放全文的方法、表格和图片...</small></p>
+  return <div style={{ background: '#f8fafc', border: '1px solid #cbd5e1', padding: 10, margin: '8px 0' }}>
+    <p style={{ marginTop: 0 }}><small>{inspection.extraction_status}</small></p>
+    <strong>研究方法</strong>{inspection.methods.length ? inspection.methods.map((item) => <p key={`${item.section}-${item.text.slice(0, 20)}`}><small>{item.section}：</small>{item.text}</p>) : <p>原文未定位到方法章节。</p>}
+    <strong>技术路线</strong>{inspection.technical_route.length ? <ol>{inspection.technical_route.map((item, index) => <li key={`${item}-${index}`}>{item}</li>)}</ol> : <p>原文未定位到可整理的技术路线。</p>}
+    <strong>相关数据表</strong><p><small>{inspection.data_summary}</small></p>{inspection.data_tables.length ? inspection.data_tables.map((table, index) => <details key={`${table.caption}-${index}`}><summary>{table.caption}</summary><pre style={{ whiteSpace: 'pre-wrap', overflowX: 'auto' }}>{table.data}</pre></details>) : <p>原文未定位到表格。</p>}
+    <strong>相关图片</strong>{inspection.figures.length ? inspection.figures.map((figure, index) => <figure key={`${figure.caption}-${index}`} style={{ margin: '8px 0' }}>{figure.image_url ? <img src={figure.image_url} alt={figure.caption} style={{ maxWidth: '100%', maxHeight: 260 }} /> : <p><small>来源没有提供可嵌入的图片预览。</small></p>}<figcaption>{figure.caption} · <a href={figure.source_url} target="_blank" rel="noreferrer">查看原文</a></figcaption></figure>) : <p>原文未定位到图片。</p>}
+    <small>{inspection.note}</small>
+  </div>
 }
 
 function orderCatalog(papers: CatalogPaper[], sortOrder: string) {

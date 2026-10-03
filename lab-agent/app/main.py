@@ -23,7 +23,7 @@ from app.services.admin_adapter import AdapterError, LocalAdminAdapter, Preview
 from app.services.agent import AgentRun, AgentService
 from app.services.knowledge import KnowledgeAnswer, KnowledgeService
 from app.services.experiment_extraction import ExperimentExtraction, ExperimentExtractionService
-from app.services.ingestion import fetch_open_access_abstract
+from app.services.ingestion import fetch_open_access_abstract, inspect_open_access_article
 from app.services.literature_import import (
     LiteratureImportResult,
     import_open_access_literature,
@@ -82,6 +82,7 @@ class LiteratureCatalogRequest(BaseModel):
     query: str = Field(min_length=2, max_length=500)
     page: int = Field(default=1, ge=1)
     sort_order: str = Field(default="relevance", pattern="^(relevance|year_desc|impact_factor_desc)$")
+    display_mode: str = Field(default="all", pattern="^(all|with_data_or_images)$")
 
 
 class SelectedLiteratureRequest(BaseModel):
@@ -275,7 +276,7 @@ def import_literature(
 def literature_catalog(request: LiteratureCatalogRequest, x_user_id: str | None = Header(default=None)) -> dict[str, Any]:
     current_user(x_user_id)
     try:
-        return search_open_access_catalog(request.query, request.page, request.sort_order)
+        return search_open_access_catalog(request.query, request.page, request.sort_order, request.display_mode)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except RuntimeError as error:
@@ -289,6 +290,17 @@ def literature_abstract(pmcid: str, x_user_id: str | None = Header(default=None)
         return {"abstract": fetch_open_access_abstract(pmcid)}
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.get("/v1/literature/catalog/{pmcid}/inspection")
+def literature_inspection(pmcid: str, x_user_id: str | None = Header(default=None)) -> dict[str, Any]:
+    current_user(x_user_id)
+    try:
+        return inspect_open_access_article(pmcid)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
 
 @app.post("/v1/literature/selected-import", response_model=LiteratureImportResult)

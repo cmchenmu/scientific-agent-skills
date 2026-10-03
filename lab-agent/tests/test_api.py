@@ -150,7 +150,7 @@ def test_library_summary_and_import_access_control(monkeypatch, tmp_path):
 def test_catalog_and_selected_import_are_bounded_and_role_protected(monkeypatch, tmp_path):
     monkeypatch.setenv("LAB_AGENT_DATA_PATH", str(tmp_path / "data"))
     client = TestClient(app)
-    monkeypatch.setattr("app.main.search_open_access_catalog", lambda query, cursor, sort: {"total": 101, "papers": [{"pmcid": "PMC1", "title": "Paper", "journal": None, "year": "2026", "authors": None, "abstract": "Abstract"}], "next_cursor_mark": "next"})
+    monkeypatch.setattr("app.main.search_open_access_catalog", lambda query, cursor, sort, mode: {"total": 101, "papers": [{"pmcid": "PMC1", "title": "Paper", "journal": None, "year": "2026", "authors": None, "abstract": "Abstract"}], "next_cursor_mark": "next"})
     catalog = client.post("/v1/literature/catalog", headers=headers("student-demo"), json={"query": "mouse brain"})
     assert catalog.status_code == 200
     assert catalog.json()["total"] == 101
@@ -159,6 +159,21 @@ def test_catalog_and_selected_import_are_bounded_and_role_protected(monkeypatch,
     assert denied.status_code == 403
     selected = client.post("/v1/literature/selected-import", headers=headers("research-demo"), json={"project_id": "mouse-neuro-demo", "pmcids": [f"PMC{number}" for number in range(51)]})
     assert selected.status_code == 422
+
+
+def test_catalog_inspection_returns_methods_tables_and_figures(monkeypatch, tmp_path):
+    monkeypatch.setenv("LAB_AGENT_DATA_PATH", str(tmp_path / "data"))
+    client = TestClient(app)
+    monkeypatch.setattr("app.main.inspect_open_access_article", lambda pmcid: {
+        "pmcid": pmcid, "methods": [{"section": "Methods", "text": "Protocol."}],
+        "technical_route": ["Methods"], "data_tables": [{"caption": "Table 1", "data": "x y"}],
+        "data_summary": "Located one table.", "extraction_status": "Extractable full text.",
+        "figures": [{"caption": "Figure 1", "image_url": "https://example.test/figure.png", "source_url": "https://example.test/article"}], "note": "source text",
+    })
+    response = client.get("/v1/literature/catalog/PMC1/inspection", headers=headers("student-demo"))
+    assert response.status_code == 200
+    assert response.json()["methods"][0]["section"] == "Methods"
+    assert response.json()["figures"][0]["image_url"]
 
 
 def test_library_documents_download_and_delete_access(monkeypatch, tmp_path):

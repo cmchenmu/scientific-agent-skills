@@ -11,6 +11,7 @@ import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -23,8 +24,8 @@ EUROPE_PMC_SEARCH = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 EUROPE_PMC_FULL_TEXT = (
     "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML"
 )
+PMC_ARTICLE_PAGE = "https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/"
 SUPPORTED_SUFFIXES = {".xml", ".html", ".htm", ".pdf", ".docx"}
-EXCLUDED_PUBLICATION_TYPES = {"abstract", "correction", "editorial", "letter"}
 EMBEDDING_DIMENSIONS = 256
 
 
@@ -173,17 +174,10 @@ def hash_embedding(text: str, dimensions: int = EMBEDDING_DIMENSIONS) -> list[fl
 def select_open_access_results(
     results: Iterable[dict[str, Any]], limit: int
 ) -> list[dict[str, Any]]:
-    """Keep research articles with PMC full text; API search hits are not trusted blindly."""
+    """Keep every open PMC full-text record; extractability is reported after selection."""
     selected: list[dict[str, Any]] = []
     for result in results:
-        publication_types = {
-            value.strip().lower() for value in result.get("pubType", "").split(";")
-        }
-        if (
-            result.get("isOpenAccess") != "Y"
-            or not result.get("pmcid")
-            or publication_types.intersection(EXCLUDED_PUBLICATION_TYPES)
-        ):
+        if result.get("isOpenAccess") != "Y" or not result.get("pmcid"):
             continue
         selected.append(result)
         if len(selected) == limit:
@@ -192,7 +186,7 @@ def select_open_access_results(
 
 
 def search_open_access_catalog(
-    query: str, page: int = 1, sort_order: str = "relevance"
+    query: str, page: int = 1, sort_order: str = "relevance", display_mode: str = "all"
 ) -> dict[str, Any]:
     """Return a fixed-size browseable page of downloadable PMC metadata."""
     cleaned = " ".join(query.split())
@@ -200,6 +194,8 @@ def search_open_access_catalog(
         raise ValueError("catalog query and positive page are required")
     if sort_order not in {"relevance", "year_desc", "impact_factor_desc"}:
         raise ValueError("invalid catalog sort order")
+    if display_mode not in {"all", "with_data_or_images"}:
+        raise ValueError("invalid catalog display mode")
     payload = _catalog_payload(cleaned, page)
     papers = []
     for item in select_open_access_results(payload["resultList"].get("result", []), 20):
@@ -212,6 +208,21 @@ def search_open_access_catalog(
             "impact_factor_year": metric["year"] if metric else None,
             "impact_factor_source": metric["source"] if metric else None,
         })
+    if display_mode == "with_data_or_images":
+        def has_displayable_content(paper: dict[str, Any]) -> bool:
+            try:
+                inspection = inspect_open_access_article(paper["pmcid"])
+            except RuntimeError:
+                return False
+            return bool(inspection["data_tables"]) or any(
+                figure["image_url"] for figure in inspection["figures"]
+            )
+
+        # Full-text checks are network-bound. A small bounded pool keeps the page responsive
+        # without sending an unbounded fan-out to Europe PMC and PMC.
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            checks = executor.map(has_displayable_content, papers)
+            papers = [paper for paper, include in zip(papers, checks) if include]
     if sort_order == "year_desc":
         papers.sort(key=lambda paper: int(paper["year"] or 0), reverse=True)
     if sort_order == "impact_factor_desc":
@@ -222,6 +233,8 @@ def search_open_access_catalog(
         "papers": papers,
         "current_page": page,
         "total_pages": math.ceil(total / 20),
+        "display_mode": display_mode,
+        "page_displayed": len(papers),
     }
 
 
@@ -263,6 +276,118 @@ def fetch_open_access_abstract(pmcid: str) -> str | None:
         return _text(abstract) or None
     except (ET.ParseError, OSError, urllib.error.URLError):
         return None
+
+
+@lru_cache(maxsize=256)
+def _pmc_figure_urls(pmcid: str) -> dict[str, str]:
+    """Map JATS graphic file names to the actual PMC CDN URLs on the article page."""
+    request = urllib.request.Request(
+        PMC_ARTICLE_PAGE.format(pmcid=pmcid),
+        headers={"User-Agent": "Mozilla/5.0 (compatible; lab-agent-learning/0.1)"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            page = response.read().decode("utf-8", errors="replace")
+    except (OSError, urllib.error.URLError):
+        return {}
+
+    urls: dict[str, str] = {}
+    for match in re.finditer(r"<img\b[^>]*\bsrc=[\"']([^\"']+)[\"']", page, re.I):
+        image_url = match.group(1).replace("&amp;", "&")
+        filename = Path(urllib.parse.urlparse(image_url).path).name
+        if filename and image_url.startswith("https://cdn.ncbi.nlm.nih.gov/"):
+            urls.setdefault(filename, image_url)
+    return urls
+
+
+def _extraction_status(
+    root: ET.Element,
+    body: ET.Element | None,
+    methods: list[dict[str, str]],
+    tables: list[dict[str, str]],
+    figures: list[dict[str, str | None]],
+) -> str:
+    """State why a record did or did not yield machine-readable experimental evidence."""
+    if root.attrib.get("article-type", "").lower() == "abstract":
+        return "该开放记录仅提供摘要，没有可读取的全文正文、数据表或图片；可下载摘要原文，但无法生成完整实验提取。"
+    if body is None:
+        return "来源返回了开放记录，但 XML 缺少正文 body；可能仅提供元数据、扫描版或非标准全文格式。"
+    available = [
+        label for label, present in (("方法章节", methods), ("数据表", tables), ("图片", figures)) if present
+    ]
+    if not available:
+        return "已读取开放全文，但没有定位到机器可读的方法章节、数据表或图片；相关内容可能在补充材料、扫描页或非标准排版中。"
+    missing = [
+        label for label, present in (("方法章节", methods), ("数据表", tables), ("图片", figures)) if not present
+    ]
+    status = "已读取开放全文；可提取内容包括：" + "、".join(available) + "。"
+    return status + ("未定位到：" + "、".join(missing) + "。" if missing else "")
+
+
+@lru_cache(maxsize=256)
+def inspect_open_access_article(pmcid: str) -> dict[str, Any]:
+    """Extract reviewable methods, tables, and figure references from one public JATS XML."""
+    if not re.fullmatch(r"PMC\d+", pmcid):
+        raise ValueError("invalid PMC ID")
+    try:
+        request = urllib.request.Request(
+            EUROPE_PMC_FULL_TEXT.format(pmcid=pmcid),
+            headers={"User-Agent": "lab-agent-learning/0.1"},
+        )
+        with urllib.request.urlopen(request, timeout=30) as response:
+            root = ET.parse(response).getroot()
+    except (ET.ParseError, OSError, urllib.error.URLError) as error:
+        raise RuntimeError("article full text is temporarily unavailable") from error
+
+    sections: list[dict[str, str]] = []
+    body = next((item for item in root.iter() if _local_name(item) == "body"), None)
+
+    def collect(section: ET.Element, inherited_title: str = "Body") -> None:
+        title = _text(next((item for item in section if _local_name(item) == "title"), None)) or inherited_title
+        paragraphs = [_text(item) for item in section if _local_name(item) == "p" and _text(item)]
+        if paragraphs:
+            sections.append({"section": title, "text": "\n".join(paragraphs)[:6_000]})
+        for child in section:
+            if _local_name(child) == "sec":
+                collect(child, title)
+
+    if body is not None:
+        for child in body:
+            if _local_name(child) == "sec":
+                collect(child)
+    method_pattern = re.compile(r"method|material|protocol|experimental|procedure|统计|方法|材料|实验", re.I)
+    methods = [item for item in sections if method_pattern.search(item["section"])] [:12]
+    tables = []
+    for table in (item for item in root.iter() if _local_name(item) == "table-wrap"):
+        tables.append({"caption": _text(next((child for child in table if _local_name(child) == "caption"), None)) or "Table", "data": _text(table)[:4_000]})
+        if len(tables) == 12:
+            break
+    figure_urls = _pmc_figure_urls(pmcid)
+    figures = []
+    for figure in (item for item in root.iter() if _local_name(item) == "fig"):
+        graphic = next((child for child in figure.iter() if _local_name(child) == "graphic"), None)
+        href = next((value for key, value in (graphic.attrib.items() if graphic is not None else []) if key.rsplit("}", 1)[-1] == "href"), None)
+        filename = Path(href).name if href else ""
+        figures.append({
+            "caption": _text(next((child for child in figure if _local_name(child) == "caption"), None)) or "Figure",
+            "image_url": figure_urls.get(filename),
+            "source_url": PMC_ARTICLE_PAGE.format(pmcid=pmcid),
+        })
+        if len(figures) == 12:
+            break
+    return {
+        "pmcid": pmcid,
+        "methods": methods,
+        "technical_route": [item["section"] for item in methods],
+        "data_tables": tables,
+        "data_summary": (
+            f"已从开放全文定位到 {len(tables)} 张表格。"
+            + ("表格标题：" + "；".join(item["caption"] for item in tables[:3]) + "。" if tables else "")
+        ),
+        "figures": figures,
+        "extraction_status": _extraction_status(root, body, methods, tables, figures),
+        "note": "内容来自开放全文原文；数据概览仅统计已定位表格，图片和图注需结合原文核对。未提供预览的图片可通过原文链接查看。",
+    }
 
 
 def download_open_access_articles(
