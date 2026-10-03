@@ -19,7 +19,7 @@ type Experiment = { document_id: string; title: string; experimental_workflow: E
 type CatalogPaper = { pmcid: string; title: string; journal?: string; year?: string; authors?: string; abstract?: string; impact_factor?: number; impact_factor_year?: string; impact_factor_source?: string }
 type CatalogPage = { total: number; papers: CatalogPaper[]; current_page: number; total_pages: number; display_mode?: string; page_displayed?: number }
 type CatalogInspection = { pmcid: string; methods: { section: string; text: string }[]; technical_route: string[]; data_tables: { caption: string; data: string }[]; data_summary: string; figures: { caption: string; image_url?: string; source_url: string }[]; extraction_status: string; note: string }
-type LibraryDocument = { document_id: string; title: string; effective_at: string; status: string; source_format: string; source: string }
+type LibraryDocument = { document_id: string; title: string; effective_at: string; status: string; source_format: string; source: string; pmcid?: string }
 
 function request(path: string, user: string, options: RequestInit = {}) {
   return fetch(`${api}${path}`, {
@@ -279,6 +279,8 @@ function App() {
     await loadLibraryDocuments()
   }
 
+  const downloadedLibraryDocuments = libraryDocuments.filter((paper) => paper.source.startsWith('Europe PMC:'))
+
   return <main style={{ maxWidth: 980, margin: '32px auto', fontFamily: 'system-ui, sans-serif', color: '#172033', padding: '0 20px' }}>
     <header style={{ borderBottom: '1px solid #d9e0e8', paddingBottom: 18 }}>
       <h1 style={{ margin: 0 }}>Lab Agent</h1>
@@ -310,18 +312,17 @@ function App() {
         <label>跳转到第 <input value={catalogPageInput} onChange={(event) => setCatalogPageInput(event.target.value)} inputMode="numeric" style={{ width: 70, margin: '0 6px' }} /> 页</label><button onClick={goToCatalogPage} style={{ ...buttonStyle, marginLeft: 8 }}>跳转</button>
       </div>}
     </section>
-    <section style={sectionStyle}>
-      <h2>3. 我的论文库</h2>
-      <p>{libraryDocuments.length ? `已授权 ${libraryDocuments.length} 篇论文。` : '暂无可访问的已下载论文。'}</p>
-      {libraryDocuments.length > 0 && <div style={{ maxHeight: 420, overflowY: 'auto', border: '1px solid #d9e0e8', padding: '0 10px' }}>{libraryDocuments.map((paper) => <div key={paper.document_id} style={{ borderTop: '1px solid #d9e0e8', padding: '10px 0' }}><strong>{paper.title}</strong><br /><small>来源：{paper.source} · 入库：{paper.effective_at} · 状态：{paper.status} · 格式：{paper.source_format}</small><br /><button onClick={() => void downloadOriginal(paper)} style={buttonStyle}>下载原文</button>{user !== 'student-demo' && <button onClick={() => void removeDocument(paper)} style={{ ...buttonStyle, marginLeft: 8, background: '#b42318' }}>删除</button>}</div>)}</div>}
-    </section>
     <section id="paper-extraction" style={sectionStyle}>
-      <h2>4. 已入库论文实验提取</h2>
+      <h2>3. 我的论文库与实验提取</h2>
+      <h3>已下载论文</h3>
+      <p>{downloadedLibraryDocuments.length ? `已下载并缓存 ${downloadedLibraryDocuments.length} 篇论文。` : '暂无用户下载并缓存的论文。'}</p>
+      {downloadedLibraryDocuments.length > 0 && <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #d9e0e8', padding: '0 10px' }}>{downloadedLibraryDocuments.map((paper) => <div key={paper.document_id} style={{ borderTop: '1px solid #d9e0e8', padding: '8px 0' }}><strong>{paper.title}</strong><br /><small>{paper.pmcid ?? 'Europe PMC'} · 下载：{paper.effective_at} · 状态：已下载并缓存</small><br /><button onClick={() => void downloadOriginal(paper)} style={{ ...buttonStyle, marginTop: 6 }}>下载原文</button>{user !== 'student-demo' && <button onClick={() => void removeDocument(paper)} style={{ ...buttonStyle, marginLeft: 8, marginTop: 6, background: '#b42318' }}>删除</button>}</div>)}</div>}
+      <h3>已入库论文实验提取</h3>
       <p><small>知识检索命中的本地论文会自动带入；也可在本模块独立检索已入库论文。</small></p>
       <label>关键词 <input value={paperQuery} onChange={(event) => setPaperQuery(event.target.value)} style={{ minWidth: 280 }} /></label>
       <button onClick={() => void searchPapers()} style={{ ...buttonStyle, marginLeft: 8 }}>检索前五篇论文</button>
       {papersLinkedFromKnowledge && <p><small>以下论文由上方知识检索自动联动；每篇卡片展示该次检索命中的关键原文信息。</small></p>}
-      {papers.length > 0 && <div style={{ marginTop: 12 }}>{papers.map((paper) => <button key={paper.document_id} onClick={() => void selectPaper(paper)} style={{ display: 'block', width: '100%', textAlign: 'left', marginBottom: 7, padding: 10, border: '1px solid #cbd5e1', background: '#fff', borderRadius: 4, cursor: 'pointer' }}><strong>{paper.title}</strong><br /><small>{paper.section ?? '正文'} · {paper.snippet}</small></button>)}</div>}
+      {papers.length > 0 && <div style={{ maxHeight: 240, overflowY: 'auto', marginTop: 12, padding: '0 8px', border: '1px solid #d9e0e8' }}>{papers.map((paper) => <button key={paper.document_id} onClick={() => void selectPaper(paper)} style={{ display: 'block', width: '100%', textAlign: 'left', margin: '7px 0', padding: 8, border: '1px solid #cbd5e1', background: '#fff', borderRadius: 4, cursor: 'pointer' }}><strong>{paper.title}</strong><br /><small>{paper.section ?? '正文'} · {paper.snippet}</small></button>)}</div>}
       {experiment && <div style={resultStyle}>
         <h3 style={{ marginTop: 0 }}>{experiment.title}</h3>
         <EvidenceGroup title="实验流程" items={experiment.experimental_workflow} />
@@ -335,7 +336,7 @@ function App() {
       </div>}
     </section>
     <section style={sectionStyle}>
-      <h2>研究方向助手</h2>
+      <h2>4. 研究方向助手</h2>
       <p>将科研方向转换为 Europe PMC 候选检索关键词，帮助从研究主题进入开放论文搜索。</p>
       <p>{library ? `当前项目：${library.documents} 篇文档，${library.chunks} 个可检索片段。` : '正在读取知识库统计...'}</p>
       <label>科研方向 <textarea value={researchDirection} onChange={(event) => setResearchDirection(event.target.value)} rows={3} style={{ width: '100%', boxSizing: 'border-box' }} /></label>

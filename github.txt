@@ -1,6 +1,6 @@
 ssh -T git@github.com
 git add .
-git commit -m "研究方向助手修改"
+git commit -m "我的论文库与实验提取"
 git push
 
 git remote set-url origin git@github-personal:YoungLee1995/scientific-agent-skills.git
