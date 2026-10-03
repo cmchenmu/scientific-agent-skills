@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import './app.css'
 
 const api = import.meta.env.VITE_API_URL ?? ''
 const project = 'mouse-neuro-demo'
@@ -283,24 +284,24 @@ function App() {
 
   const downloadedLibraryDocuments = libraryDocuments.filter((paper) => paper.source.startsWith('Europe PMC:'))
 
-  return <main style={{ maxWidth: 980, margin: '32px auto', fontFamily: 'system-ui, sans-serif', color: '#172033', padding: '0 20px' }}>
-    <header style={{ borderBottom: '1px solid #d9e0e8', paddingBottom: 18 }}>
+  return <main className="app-shell">
+    <header className="app-header">
       <h1 style={{ margin: 0 }}>Lab Agent</h1>
       <p style={{ marginBottom: 0 }}>受控 Agent 编排知识检索、开放论文搜索、入库与实验信息提取；各模块也支持独立使用。</p>
     </header>
-    <section style={sectionStyle}>
+    <section className="session-bar" style={sectionStyle}>
       <label>开发身份 <select value={user} onChange={(event) => setUser(event.target.value)}>
         <option value="student-demo">Student Demo</option><option value="research-demo">Research Assistant Demo</option><option value="pi-demo">PI Demo</option>
       </select></label>
       <span style={{ marginLeft: 14 }}>项目：{project}</span>
     </section>
-    <section id="catalog-search" style={sectionStyle}>
+    <section className="workflow-stage" style={sectionStyle}>
       <h2>1. 知识检索与联动摘要</h2>
       <textarea value={question} onChange={(event) => setQuestion(event.target.value)} rows={3} style={{ width: '100%', boxSizing: 'border-box' }} />
       <button onClick={() => void ask()} style={buttonStyle}>检索已授权证据</button>
-      {answer && <div style={resultStyle}><strong>{answer.status}</strong><p>{answer.answer}</p>{answer.literature_query && <p><small>已自动用于论文检索的关键词：{answer.literature_query}</small></p>}<strong>出处</strong>{answer.citations.map((citation) => <p key={citation.chunk_id}><small>{citation.title} · {citation.section ?? `第 ${citation.page} 页`} · {citation.document_id}</small></p>)}</div>}
+      {answer && <div className="result-panel" style={resultStyle}><strong>{answer.status}</strong><p>{answer.answer}</p>{answer.literature_query && <p><small>已自动用于论文检索的关键词：{answer.literature_query}</small></p>}<strong>出处</strong>{answer.citations.map((citation) => <p key={citation.chunk_id}><small>{citation.title} · {citation.section ?? `第 ${citation.page} 页`} · {citation.document_id}</small></p>)}</div>}
     </section>
-    <section style={sectionStyle}>
+    <section id="catalog-search" className="workflow-stage" style={sectionStyle}>
       <h2>2. 开放论文检索与选择下载</h2>
       <p><small>知识检索完成后会自动带入关键词并搜索；也可在本模块独立输入关键词。默认优先显示可展示数据表或图片的论文，可切换为全部论文。</small></p>
       <label>搜索关键词 <input value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} style={{ minWidth: 280 }} /></label>
@@ -314,7 +315,7 @@ function App() {
         <label>跳转到第 <input value={catalogPageInput} onChange={(event) => setCatalogPageInput(event.target.value)} inputMode="numeric" style={{ width: 70, margin: '0 6px' }} /> 页</label><button onClick={goToCatalogPage} style={{ ...buttonStyle, marginLeft: 8 }}>跳转</button>
       </div>}
     </section>
-    <section id="paper-extraction" style={sectionStyle}>
+    <section id="paper-extraction" className="workflow-stage" style={sectionStyle}>
       <h2>3. 我的论文库与实验提取</h2>
       <h3>已下载论文</h3>
       <p>{downloadedLibraryDocuments.length ? `已下载并缓存 ${downloadedLibraryDocuments.length} 篇论文。` : '暂无用户下载并缓存的论文。'}</p>
@@ -325,7 +326,7 @@ function App() {
       <button onClick={() => void searchPapers()} style={{ ...buttonStyle, marginLeft: 8 }}>检索前五篇论文</button>
       {papersLinkedFromKnowledge && <p><small>以下论文由上方知识检索自动联动；每篇卡片展示该次检索命中的关键原文信息。</small></p>}
       {papers.length > 0 && <div style={{ maxHeight: 240, overflowY: 'auto', marginTop: 12, padding: '0 8px', border: '1px solid #d9e0e8' }}>{papers.map((paper) => <button key={paper.document_id} onClick={() => void selectPaper(paper)} style={{ display: 'block', width: '100%', textAlign: 'left', margin: '7px 0', padding: 8, border: '1px solid #cbd5e1', background: '#fff', borderRadius: 4, cursor: 'pointer' }}><strong>{paper.title}</strong><br /><small>{paper.section ?? '正文'} · {paper.snippet}</small></button>)}</div>}
-      {experiment && <div style={resultStyle}>
+      {experiment && <div className="result-panel" style={resultStyle}>
         <h3 style={{ marginTop: 0 }}>{experiment.title}</h3>
         <EvidenceGroup title="实验流程" items={experiment.experimental_workflow} />
         <EvidenceGroup title="材料与设备" items={experiment.materials_and_equipment} />
@@ -337,14 +338,14 @@ function App() {
         <p><small>{experiment.review_note}</small></p>
       </div>}
     </section>
-    <section style={sectionStyle}>
+    <section className="workflow-stage" style={sectionStyle}>
       <h2>4. 受控研究 Agent</h2>
       <p>将科研方向转换为 Europe PMC 候选检索关键词；Agent 只能调用服务端批准的只读工具，下载与入库仍需用户确认。</p>
       <p>{library ? `当前项目：${library.documents} 篇文档，${library.chunks} 个可检索片段。` : '正在读取知识库统计...'}</p>
       <label>科研方向 <textarea value={researchDirection} onChange={(event) => setResearchDirection(event.target.value)} rows={3} style={{ width: '100%', boxSizing: 'border-box' }} /></label>
       <p><button onClick={() => void proposeLiteratureQuery()} style={buttonStyle}>生成候选检索式</button>{candidateQuery && <button onClick={() => void openCandidateCatalog()} style={{ ...buttonStyle, marginLeft: 8 }}>查看可下载论文</button>} {candidateQuery && <small>点击后将在“开放论文检索与选择下载”区域搜索并自动跳转。</small>}</p>
       {candidateQuery && <label>候选检索式（可编辑、复制）<textarea value={candidateQuery} onChange={(event) => setCandidateQuery(event.target.value)} rows={2} style={{ width: '100%', boxSizing: 'border-box', marginTop: 6 }} /></label>}
-      {agentRun && <details open style={{ marginTop: 10, border: '1px solid #cbd5e1', padding: 8 }}><summary>本次 Agent 执行记录</summary><p><small>运行 ID：{agentRun.run_id} · 状态：{agentRun.status} · 最大工具轮次：{agentRun.max_tool_rounds}</small></p><p><small>执行工具：{agentRun.executed_tools.length ? agentRun.executed_tools.join('、') : '无'} · 执行方式：{agentRun.model_used ? '模型工具调用' : '确定性规则回退'}</small></p><p><small>执行边界：仅生成候选检索式；不会自动下载、入库、修改权限或执行脚本。</small></p></details>}
+      {agentRun && <details className="agent-receipt" open style={{ marginTop: 10, border: '1px solid #cbd5e1', padding: 8 }}><summary>本次 Agent 执行记录</summary><p><small>运行 ID：{agentRun.run_id} · 状态：{agentRun.status} · 最大工具轮次：{agentRun.max_tool_rounds}</small></p><p><small>执行工具：{agentRun.executed_tools.length ? agentRun.executed_tools.join('、') : '无'} · 执行方式：{agentRun.model_used ? '模型工具调用' : '确定性规则回退'}</small></p><p><small>执行边界：仅生成候选检索式；不会自动下载、入库、修改权限或执行脚本。</small></p></details>}
       <p><small>使用方式：输入研究对象、疾病或现象、物种、模型等信息，生成候选检索式后检查关键词，再点击“查看可下载论文”。</small></p>
       <small>该功能只生成候选查询，不会自动下载或入库。论文下载是独立操作，只显示开放获取 PMC 全文，且需要 Research Assistant 或 PI 身份。</small>
     </section>
@@ -356,7 +357,7 @@ function App() {
       <small>该操作仅写入本地 SQLite 模拟器，不连接真实财务系统。</small>
     </section>
     <section style={sectionStyle}><h2>我的任务</h2>{tasks.length ? <ul>{tasks.map((task) => <li key={task.id}>{task.request_type} · {task.state} · {task.id}</li>)}</ul> : <p>暂无任务。</p>}</section>
-    {message && <p style={{ background: '#fff3cd', padding: 12 }}>{message}</p>}
+    {message && <p className="status-message">{message}</p>}
   </main>
 }
 
@@ -389,8 +390,8 @@ function pageWindow(currentPage: number, totalPages: number) {
   return Array.from({ length: Math.max(0, last - first + 1) }, (_, index) => first + index)
 }
 
-const sectionStyle = { borderBottom: '1px solid #d9e0e8', padding: '20px 0' }
-const buttonStyle = { background: '#0f766e', color: '#fff', border: 0, borderRadius: 4, padding: '9px 13px', marginTop: 10, cursor: 'pointer' }
-const resultStyle = { background: '#eef6ff', padding: 14, marginTop: 12 }
+const sectionStyle = {}
+const buttonStyle = { background: '#167a78', color: '#fff', border: 0, borderRadius: 4, padding: '8px 12px', marginTop: 10, cursor: 'pointer' }
+const resultStyle = { background: '#f8fbfd', padding: 16, marginTop: 14 }
 
 createRoot(document.getElementById('root')!).render(<App />)

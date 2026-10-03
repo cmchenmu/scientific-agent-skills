@@ -1,6 +1,6 @@
 ssh -T git@github.com
 git add .
-git commit -m "全篇codex修改版"
+git commit -m "页面美化"
 git push
 
 git remote set-url origin git@github-personal:YoungLee1995/scientific-agent-skills.git
